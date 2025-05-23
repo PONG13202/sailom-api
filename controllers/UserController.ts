@@ -77,7 +77,6 @@ register: async (req: Request, res: Response) => {
       google_id,
     } = req.body;
 
-    // ตรวจสอบค่าว่างสำหรับฟิลด์ที่จำเป็น
     if (!user_email) {
       return res.status(400).json({ message: "กรุณาระบุอีเมล" });
     }
@@ -244,7 +243,6 @@ google_login: async (req: Request, res: Response) => {
     return res.status(500).json({ message: "ไม่สามารถเข้าสู่ระบบด้วย Google ได้" });
   }
 },
-
 login: async (req: Request, res: Response) => {
   try {
     const { user_name, user_email, user_pass } = req.body;
@@ -298,6 +296,30 @@ login: async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "เกิดข้อผิดพลาดในระบบ" });
+  }
+},
+all_user: async (req: Request, res: Response) => {
+  try{
+    const users = await prisma.user.findMany({
+      select: {
+        user_id: true,
+        user_name: true,
+        user_fname: true,
+        user_lname: true,
+        user_email: true,
+        user_phone: true,
+        user_img: true,
+        user_status: true,
+      }
+    });
+    if (!users) {
+      return res.status(404).json({ message: "ไม่พบผู้ใช้ในระบบ" });
+    }
+    return res.status(200).json(users);
+
+  }catch (error) {
     console.error(error);
     return res.status(500).json({ message: "เกิดข้อผิดพลาดในระบบ" });
   }

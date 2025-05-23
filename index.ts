@@ -1,6 +1,6 @@
 import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
-import cors from 'cors'; // ใช้ import แทน require
+import cors from 'cors'; 
 import { UserController } from './controllers/UserController';
 
 dotenv.config();
@@ -8,7 +8,7 @@ dotenv.config();
 const app = express();
 const port = 3001;
 
-app.use(cors()); // เพิ่ม middleware cors
+app.use(cors());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
@@ -47,7 +47,14 @@ app.get('/check_email', async (req: Request, res: Response) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
+app.get('/all_user', async (req: Request, res: Response) => {
+  try {
+    await UserController.all_user(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
 
 app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
+  console.log(`app listening on port ${port}`);
 });
