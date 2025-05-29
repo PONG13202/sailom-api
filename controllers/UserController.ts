@@ -10,6 +10,7 @@ dotenv.config();
 
 const port = 3001;
 const prisma = new PrismaClient();
+const secret = process.env.JWT_SECRET;
 
 export const UserController = {
   check_username: async (req: Request, res: Response) => {
@@ -219,9 +220,14 @@ google_login: async (req: Request, res: Response) => {
       {
         id: user.user_id,
         user_name: user.user_name,
+        user_fname: user.user_fname,
+        user_lname: user.user_lname,
+        user_email: user.user_email,
+        user_img: user.user_img,
+        user_phone: user.user_phone,
         user_status: user.user_status,
       },
-      process.env.JWT_SECRET || "mysecret",
+      process.env.JWT_SECRET!,
       { expiresIn: "1d" }
     );
 
@@ -276,10 +282,15 @@ login: async (req: Request, res: Response) => {
       {
         id: user.user_id,
         user_name: user.user_name,
+        user_fname: user.user_fname,
+        user_lname: user.user_lname,
+        user_email: user.user_email,
+        user_img: user.user_img,
+        user_phone: user.user_phone,
         user_status: user.user_status,
       },
-      process.env.JWT_SECRET || "mysecret",
-      { expiresIn: "1d" }
+      process.env.JWT_SECRET!, // ให้แน่ใจว่า JWT_SECRET มีค่าใน .env
+      { expiresIn: "1d" }// 10 seconds
     );
 
     return res.status(200).json({
@@ -324,5 +335,43 @@ all_user: async (req: Request, res: Response) => {
     return res.status(500).json({ message: "เกิดข้อผิดพลาดในระบบ" });
   }
 },
+info: async (req: Request, res: Response) => {
+  try {
+    const userData = (req as any).user; // fallback แบบไม่มี type
+    const id = userData?.id;
+
+    console.log("User ID from token:", id);
+
+    if (!id) {
+      return res.status(401).json({ message: "ไม่พบ userId จาก token" });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { user_id: id },
+      select: {
+        user_id: true,
+        user_fname: true,
+        user_lname: true,
+        user_email: true,
+        user_phone: true,
+        user_img: true,
+        user_status: true,
+      },
+    });
+
+    console.log("User from database:", user);
+
+    if (!user) {
+      return res.status(404).json({ message: "ไม่พบผู้ใช้ในระบบ" });
+    }
+
+    return res.status(200).json(user);
+  } catch (error: any) {
+    console.error("เกิดข้อผิดพลาด:", error.message, error.stack);
+    return res.status(500).json({ message: "เกิดข้อผิดพลาดในระบบ", error: error.message });
+  }
+},
+
+
 
 };
