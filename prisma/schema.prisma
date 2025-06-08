@@ -15,14 +15,22 @@ datasource db {
 }
 
 model User {
-  user_id      Int      @id @default(autoincrement())
-  user_name    String?  @unique
-  user_pass    String?  // nullable for Google login
-  user_fname   String?
-  user_lname   String?
-  user_email   String   @unique
-  user_phone   String?
-  user_img     String?
-  user_status  Int
-  google_id    String?  @unique
+  user_id     Int     @id @default(autoincrement())
+  user_name   String? @unique
+  user_pass   String? // nullable for Google login
+  user_fname  String?
+  user_lname  String?
+  user_email  String  @unique
+  user_phone  String?
+  user_img    String?
+  user_status Int     @default(1)
+  google_id   String? @unique
+  admin       Admin[]
+}
+
+model Admin {
+  admin_id     Int  @id @default(autoincrement())
+  user_id      Int
+  admin_status Int  @default(1)
+  user         User @relation(fields: [user_id], references: [user_id])
 }

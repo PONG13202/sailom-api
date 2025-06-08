@@ -8,13 +8,14 @@ dotenv.config();
 
 const app = express();
 const port = 3001;
+
 const authenticateToken = (req: Request, res: Response, next: NextFunction): void => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
     res.status(401).json({ message: 'ไม่ได้รับ token' });
-    return; // ✅ แค่ return ป้องกันการทำงานต่อ แต่ไม่ return ค่า
+    return; 
   }
 
   jwt.verify(token, process.env.JWT_SECRET!, (err, user) => {
@@ -27,15 +28,9 @@ const authenticateToken = (req: Request, res: Response, next: NextFunction): voi
     next();
   });
 };
-
-
-
 app.use(cors());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-
-//middleware check token
-
 
 app.post('/register', async (req: Request, res: Response) => {
   try {
@@ -47,6 +42,13 @@ app.post('/register', async (req: Request, res: Response) => {
 app.post('/google_login', async (req: Request, res: Response) => {
   try {
     await UserController.google_login(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+app.post('/complete_profile', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    await UserController.complete_profile(req, res);
   } catch (error) {
     res.status(500).json({ message: 'Internal Server Error' });
   }
