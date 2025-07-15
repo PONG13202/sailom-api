@@ -186,18 +186,57 @@ export const UserController = {
           .json({ message: "อีเมล Google ยังไม่ได้รับการยืนยัน" });
       }
 
+      // ตรวจสอบ admin จาก email หลังจากได้ email แล้ว
+      const adminByEmail = await prisma.admin.findFirst({
+        where: {
+          user: {
+            user_email: email,
+          },
+        },
+        include: {
+          user: true,
+        },
+      });
+
+      if (!adminByEmail) {
+        return res.status(403).json({
+          message: "ไม่สามารถเข้าสู่ระบบได้ ไม่ใช่ผู้ดูแลระบบ",
+        });
+      }
+
       const existingUser = await prisma.user.findUnique({
         where: { user_email: email },
+        select: {
+          user_id: true,
+          user_name: true,
+          user_fname: true,
+          user_lname: true,
+          user_email: true,
+          user_img: true,
+          user_phone: true,
+          user_status: true,
+          google_id: true,
+        },
       });
 
       if (existingUser) {
-        if (existingUser.google_id !== googleId) {
-          return res.status(400).json({
-            message: "อีเมลนี้ถูกใช้โดยบัญชี Google อื่นแล้ว",
+        const isAdmin = await prisma.admin.findFirst({
+          where: { user_id: existingUser.user_id },
+        });
+
+        if (!isAdmin) {
+          return res.status(403).json({
+            message: "ผู้ใช้ไม่ใช่แอดมิน ไม่สามารถเข้าสู่ระบบหลังบ้านได้",
           });
         }
 
-        // เข้าระบบปกติ
+        if (existingUser.google_id !== googleId) {
+          return res.status(400).json({
+            message:
+              "อีเมลนี้ถูกใช้โดยบัญชี Google อื่นแล้ว หรือ Google ID ไม่ถูกต้อง",
+          });
+        }
+
         const jwtToken = jwt.sign(
           {
             id: existingUser.user_id,
@@ -208,15 +247,20 @@ export const UserController = {
             user_img: existingUser.user_img,
             user_phone: existingUser.user_phone,
             user_status: existingUser.user_status,
+            isAdmin: true,
           },
           process.env.JWT_SECRET!,
           { expiresIn: "1d" }
         );
 
+        const { google_id, ...safeUser } = existingUser;
         return res.status(200).json({
           message: "เข้าสู่ระบบด้วย Google สำเร็จ",
           token: jwtToken,
-          user: existingUser,
+          user: {
+            ...safeUser,
+            isAdmin: true,
+          },
         });
       }
 
@@ -255,6 +299,7 @@ export const UserController = {
         .json({ message: "ไม่สามารถเข้าสู่ระบบด้วย Google ได้" });
     }
   },
+
   complete_profile: async (req: Request, res: Response) => {
     try {
       const authHeader = req.headers.authorization;
@@ -292,9 +337,7 @@ export const UserController = {
         where: { user_name: user_name },
       });
       if (existingUserName) {
-        return res
-          .status(400)
-          .json({ message: "ชื่อผู้ใช้นี้ถูกใช้ไปแล้ว" });
+        return res.status(400).json({ message: "ชื่อผู้ใช้นี้ถูกใช้ไปแล้ว" });
       }
 
       if (!/^0[0-9]{9}$/.test(user_phone)) {
@@ -383,6 +426,10 @@ export const UserController = {
       if (!isMatch) {
         return res.status(401).json({ message: "รหัสผ่านไม่ถูกต้อง" });
       }
+      const admin = await prisma.admin.findFirst({
+        where: { user_id: user.user_id },
+      });
+      const isAdmin = !!admin;
 
       const token = jwt.sign(
         {
@@ -394,6 +441,7 @@ export const UserController = {
           user_img: user.user_img,
           user_phone: user.user_phone,
           user_status: user.user_status,
+          isAdmin,
         },
         process.env.JWT_SECRET!, // ให้แน่ใจว่า JWT_SECRET มีค่าใน .env
         { expiresIn: "1d" } // 10 seconds
@@ -411,6 +459,7 @@ export const UserController = {
           user_phone: user.user_phone,
           user_status: user.user_status,
           user_img: user.user_img,
+          isAdmin,
         },
       });
     } catch (error) {
@@ -510,6 +559,139 @@ export const UserController = {
       return res
         .status(500)
         .json({ message: "เกิดข้อผิดพลาดในระบบ", error: error.message });
+    }
+  },
+  add_user: async (req: Request, res: Response) => {
+    try {
+      const {
+        user_name,
+        user_pass,
+        user_fname,
+        user_lname,
+        user_email,
+        user_phone,
+      } = req.body;
+      if (user_pass.length < 6) {
+        return res
+          .status(400)
+          .json({ message: "รหัสผ่านต้องมีความยาวมากกว่า 6 ตัวอักษร" });
+      }
+
+      const hashedPass = await bcrypt.hash(user_pass, 10); // ถ้าจำเป็นต้อง hash
+
+      const newUser = await prisma.user.create({
+        data: {
+          user_name,
+          user_pass: hashedPass,
+          user_fname,
+          user_lname,
+          user_email,
+          user_phone,
+        },
+      });
+      return res.status(200).json({
+        message: "สร้างผู้ใช้สําเร็จ",
+        data: newUser,
+      });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({
+        message: "เกิดข้อผิดพลาดในระบบ",
+      });
+    }
+  },
+  update_user: async (req: Request, res: Response) => {
+    try {
+      const { user_id } = req.params;
+      if (!user_id) return res.status(400).json({ message: "ไม่พบ user_id" });
+
+      const {
+        user_name,
+        user_pass,
+        user_fname,
+        user_lname,
+        user_email,
+        user_phone,
+      } = req.body;
+
+      let hashedPass;
+
+      if (user_pass && user_pass.trim() !== "") {
+        if (user_pass.length < 6) {
+          return res
+            .status(400)
+            .json({ message: "รหัสผ่านต้องมีความยาวมากกว่า 6 ตัวอักษร" });
+        }
+        hashedPass = await bcrypt.hash(user_pass, 10);
+      } else {
+        // ดึงรหัสผ่านเก่ามาใช้
+        const oldUser = await prisma.user.findUnique({
+          where: { user_id: Number(user_id) },
+          select: { user_pass: true },
+        });
+
+        if (!oldUser) {
+          return res.status(404).json({ message: "ไม่พบผู้ใช้" });
+        }
+
+        hashedPass = oldUser.user_pass;
+      }
+
+      const updatedUser = await prisma.user.update({
+        where: { user_id: Number(user_id) },
+        data: {
+          user_name,
+          user_pass: hashedPass,
+          user_fname,
+          user_lname,
+          user_email,
+          user_phone,
+        },
+      });
+
+      return res.status(200).json(updatedUser);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ message: "เกิดข้อผิดพลาดในระบบ" });
+    }
+  },
+  delete_user: async (req: Request, res: Response) => {
+    try {
+      const { user_id } = req.params;
+      const { password } = req.body;
+      if (!user_id) return res.status(400).json({ message: "ไม่พบ user_id" });
+
+      if (!password || password.trim() === "") {
+        return res
+          .status(400)
+          .json({ message: "กรุณากรอกรหัสผ่านเพื่อยืนยัน" });
+      }
+      const user = await prisma.user.findUnique({
+        where: { user_id: Number(user_id) },
+        select: { user_pass: true },
+      });
+
+      if (!user) {
+        return res.status(404).json({ message: "ไม่พบผู้ใช้" });
+      }
+
+      if (user.user_pass === null) {
+        return res.status(404).json({ message: "รหัสผ่านไม่ถูกต้อง" });
+      }
+
+      const isMatch = await bcrypt.compare(password, user.user_pass);
+      if (!isMatch) {
+        return res.status(401).json({ message: "รหัสผ่านไม่ถูกต้อง" });
+      }
+
+      const deletedUser = await prisma.user.delete({
+        where: { user_id: Number(user_id) },
+      });
+
+      return res.status(200).json(deletedUser);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ message: "เกิดข้อผิดพลาดในระบบ" });
     }
   },
 };

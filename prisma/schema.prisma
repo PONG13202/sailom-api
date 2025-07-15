@@ -34,3 +34,11 @@ model Admin {
   admin_status Int  @default(1)
   user         User @relation(fields: [user_id], references: [user_id])
 }
+
+model TableMap {
+  id        Int      @id @default(autoincrement())
+  name      String
+  elements  Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

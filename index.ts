@@ -8,6 +8,9 @@ dotenv.config();
 
 const app = express();
 const port = 3001;
+app.use(cors());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
 const authenticateToken = (req: Request, res: Response, next: NextFunction): void => {
   const authHeader = req.headers['authorization'];
@@ -28,10 +31,6 @@ const authenticateToken = (req: Request, res: Response, next: NextFunction): voi
     next();
   });
 };
-app.use(cors());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
-
 app.post('/register', async (req: Request, res: Response) => {
   try {
     await UserController.register(req, res);
@@ -88,6 +87,20 @@ app.get('/info',authenticateToken, async (req: Request, res: Response) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
+app.put('/update_user/:user_id',authenticateToken, async ( req: Request, res: Response) => {
+  try {
+    await UserController.update_user(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+app.delete('/delete_user/:user_id',authenticateToken, async (req: Request, res: Response) => {
+  try {
+    await UserController.delete_user(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
 app.listen(port, () => {
   console.log(`app listening on port ${port}`);
 });
