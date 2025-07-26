@@ -73,6 +73,13 @@ app.get('/check_email', async (req: Request, res: Response) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
+app.post('/add_user',authenticateToken, async (req: Request, res: Response) => {
+  try {
+    await UserController.add_user(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
 app.get('/all_user', async (req: Request, res: Response) => {
   try {
     await UserController.all_user(req, res);
@@ -101,6 +108,92 @@ app.delete('/delete_user/:user_id',authenticateToken, async (req: Request, res: 
     res.status(500).json({ message: 'Internal Server Error' });
   }
 })
+app.post('/add_seat', async (req: Request, res: Response) => {
+  try {
+    await UserController.add_seat(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.get('/seats', async (req: Request, res: Response) => {
+  try {
+    await UserController.seats(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.delete('/delete_seat/:id', async (req: Request, res: Response) => {
+  try {
+    await UserController.delete_seat(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.post('/add_TableType', async (req: Request, res: Response) => {
+  try {
+    await UserController.add_TableType(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.get('/table_Types', async (req: Request, res: Response) => {
+  try {
+    await UserController.table_Types(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.delete('/delete_TablType/:id', async (req: Request, res: Response) => {
+  try {
+    await UserController.delete_TablType(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.post('/add_table', async (req: Request, res: Response) => {
+  try {
+    await UserController.add_table(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.get('/tables', async (req: Request, res: Response) => {
+  try {
+    await UserController.tables(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.put('/update_table/:id', async (req: Request, res: Response) => {
+  try {
+    await UserController.update_table(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.post('/save_table_positions', async (req: Request, res: Response) => {
+  try {
+    await UserController.save_table_positions(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.put('/update_table_status/:id', async (req: Request, res: Response) => {
+  try {
+    await UserController.update_table_status(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+app.delete('/delete_table/:id', async (req: Request, res: Response) => {
+  try {
+    await UserController.delete_table(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+
+
 app.listen(port, () => {
   console.log(`app listening on port ${port}`);
 });

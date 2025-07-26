@@ -32,16 +32,45 @@ model Admin {
   admin_id     Int  @id @default(autoincrement())
   user_id      Int
   admin_status Int  @default(1)
-  user         User @relation(fields: [user_id], references: [user_id])
+  user         User @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
 }
 model TableMap {
-  id        String   @id @default(uuid())
-  label     String   @unique
-  x         Int
-  y         Int
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              Int         @id @default(autoincrement())
+  label           String      @unique
+  x               Int         @default(0)
+  y               Int         @default(0)
+  active          Boolean     @default(true)
+
+  seatOptionId    Int?
+  seatOption      SeatOption? @relation(fields: [seatOptionId], references: [id])
+
+  tableTypeId     Int?
+  tableType       TableType?  @relation(fields: [tableTypeId], references: [id])
+
+  // เปลี่ยนจาก tags (ที่เป็น TableTag[]) เป็น additionalInfo (String?)
+  additionalInfo  String?     // <--- Field สำหรับ Textarea/ข้อความเพิ่มเติม
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 }
+
+model SeatOption {
+  id     Int        @id @default(autoincrement())
+  seats  Int
+  tables TableMap[]
+}
+
+model TableType {
+  id     Int        @id @default(autoincrement())
+  name   String
+  tables TableMap[]
+}
+
+model Typefood {
+  id     Int        @id @default(autoincrement())
+  name   String
+  type_status Int     @default(1)
+}
+
 
 
