@@ -2,7 +2,8 @@ import express, { Request, Response, NextFunction  } from 'express';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import cors from 'cors'; 
-import { UserController } from './controllers/UserController';
+import { UserController, upload } from './controllers/UserController'; 
+
 
 dotenv.config();
 
@@ -11,6 +12,7 @@ const port = 3001;
 app.use(cors());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.use(express.static('public'));
 
 const authenticateToken = (req: Request, res: Response, next: NextFunction): void => {
   const authHeader = req.headers['authorization'];
@@ -73,10 +75,11 @@ app.get('/check_email', async (req: Request, res: Response) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
-app.post('/add_user',authenticateToken, async (req: Request, res: Response) => {
+app.post('/add_user', authenticateToken, upload.single('user_img'), async (req: Request, res: Response) => {
   try {
     await UserController.add_user(req, res);
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
@@ -192,8 +195,34 @@ app.delete('/delete_table/:id', async (req: Request, res: Response) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 })
-
-
+app.get('/foodTypes', async (req: Request, res: Response) => {
+  try {
+    await UserController.foodTypes(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.post('/add_FoodType', async (req: Request, res: Response) => {
+  try {
+    await UserController.add_FoodType(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.put('/update_FoodType/:id', async (req: Request, res: Response) => {
+  try {
+    await UserController.update_FoodType(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.delete('/delete_FoodType/:id', async (req: Request, res: Response) => {
+  try {
+    await UserController.delete_FoodType(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
 app.listen(port, () => {
   console.log(`app listening on port ${port}`);
 });

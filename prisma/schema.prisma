@@ -34,24 +34,25 @@ model Admin {
   admin_status Int  @default(1)
   user         User @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
 }
+
 model TableMap {
-  id              Int         @id @default(autoincrement())
-  label           String      @unique
-  x               Int         @default(0)
-  y               Int         @default(0)
-  active          Boolean     @default(true)
+  id     Int     @id @default(autoincrement())
+  label  String  @unique
+  x      Int     @default(0)
+  y      Int     @default(0)
+  active Boolean @default(true)
 
-  seatOptionId    Int?
-  seatOption      SeatOption? @relation(fields: [seatOptionId], references: [id])
+  seatOptionId Int?
+  seatOption   SeatOption? @relation(fields: [seatOptionId], references: [id])
 
-  tableTypeId     Int?
-  tableType       TableType?  @relation(fields: [tableTypeId], references: [id])
+  tableTypeId Int?
+  tableType   TableType? @relation(fields: [tableTypeId], references: [id])
 
   // เปลี่ยนจาก tags (ที่เป็น TableTag[]) เป็น additionalInfo (String?)
-  additionalInfo  String?     // <--- Field สำหรับ Textarea/ข้อความเพิ่มเติม
+  additionalInfo String? // <--- Field สำหรับ Textarea/ข้อความเพิ่มเติม
 
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model SeatOption {
@@ -67,10 +68,25 @@ model TableType {
 }
 
 model Typefood {
-  id     Int        @id @default(autoincrement())
-  name   String
-  type_status Int     @default(1)
+  id          Int        @id @default(autoincrement())
+  name        String     @unique
+  type_status Int        @default(1)
+  FoodMenus   FoodMenu[]
 }
 
-
-
+model FoodMenu {
+  menu_id     Int      @id @default(autoincrement())
+  menu_name   String
+  menu_price  Int
+  menu_status Int      @default(1)
+  typefood    Typefood @relation(fields: [typefoodId], references: [id]) // กำหนดความสัมพันธ์
+  typefoodId  Int
+  MenuImages  MenuImage[]
+}
+model MenuImage {
+  menu_image_id Int  @id @default(autoincrement())
+  menu_id       Int
+  menu_image    String
+  menu_status   Int @default(0)
+  foodMenu      FoodMenu @relation(fields: [menu_id], references: [menu_id], onDelete: Cascade)
+}

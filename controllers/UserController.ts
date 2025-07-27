@@ -3,6 +3,7 @@ import { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 import jwt from "jsonwebtoken";
+import multer from "multer";
 import dotenv from "dotenv";
 import axios from "axios";
 
@@ -10,6 +11,18 @@ dotenv.config();
 
 const prisma = new PrismaClient();
 const secret = process.env.JWT_SECRET;
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+
+    cb(null, 'public/uploads/user_images'); 
+  },
+  filename: function (req, file, cb) {
+
+    cb(null, Date.now() + '-' + file.originalname);
+  }
+});
+export const upload = multer({ storage: storage });
 
 export const UserController = {
   check_username: async (req: Request, res: Response) => {
@@ -580,14 +593,28 @@ export const UserController = {
         user_email,
         user_phone,
       } = req.body;
+
+      // Validate required fields
+      if (!user_name || !user_pass || !user_email) {
+        return res
+          .status(400)
+          .json({
+            message:
+              "กรุณากรอกข้อมูลที่จำเป็น: user_name, user_pass, user_email",
+          });
+      }
+
+      // Validate password length
       if (user_pass.length < 6) {
         return res
           .status(400)
           .json({ message: "รหัสผ่านต้องมีความยาวมากกว่า 6 ตัวอักษร" });
       }
 
-      const hashedPass = await bcrypt.hash(user_pass, 10); // ถ้าจำเป็นต้อง hash
+      // Hash the user's password for security
+      const hashedPass = await bcrypt.hash(user_pass, 10);
 
+      // Create a new user record in the database
       const newUser = await prisma.user.create({
         data: {
           user_name,
@@ -596,14 +623,22 @@ export const UserController = {
           user_lname,
           user_email,
           user_phone,
+          // Conditionally save the image path:
+          // If req.file exists (meaning a file was uploaded), save its path.
+          // Otherwise, set user_img to null, making it optional.
+          user_img: req.file ? req.file.path : null,
         },
       });
+
+      // Send a success response
       return res.status(200).json({
-        message: "สร้างผู้ใช้สําเร็จ",
+        message: "สร้างผู้ใช้สำเร็จ",
         data: newUser,
       });
     } catch (error) {
+      // Log the error for debugging purposes
       console.error(error);
+      // Send a generic error response to the client
       return res.status(500).json({
         message: "เกิดข้อผิดพลาดในระบบ",
       });
@@ -909,7 +944,7 @@ export const UserController = {
         name: table.label,
         seats: table.seatOption?.seats || 0, // ใช้ seats จาก seatOption
         tableTypeId: String(table.tableType?.id || ""), // แปลง tableTypeId เป็น string
-        tableTypeName: table.tableType?.name || "ไม่ระบุประเภท",// แปลง tableTypeId เป็น string
+        tableTypeName: table.tableType?.name || "ไม่ระบุประเภท", // แปลง tableTypeId เป็น string
         additionalInfo: table.additionalInfo || "",
         x: table.x,
         y: table.y,
@@ -1107,6 +1142,68 @@ export const UserController = {
       return res
         .status(500)
         .json({ message: "Failed to delete table", error: error.message });
+    }
+  },
+
+  foodTypes: async (req: Request, res: Response) => {
+    try {
+      const foodTypes = await prisma.typefood.findMany();
+      return res.status(200).json(foodTypes);
+    } catch (error: any) {
+      console.error("Error fetching food types:", error);
+      return res
+        .status(500)
+        .json({ message: "Failed to fetch food types", error: error.message });
+    }
+  },
+  add_FoodType: async (req: Request, res: Response) => {
+    const { name } = req.body;
+    try {
+      const newFoodType = await prisma.typefood.create({
+        data: {
+          name: name,
+        },
+      });
+      return res.status(200).json(newFoodType);
+    } catch (error: any) {
+      console.error("Error creating type food:", error);
+      return res
+        .status(500)
+        .json({ message: "Failed to create type food", error: error.message });
+    }
+  },
+  update_FoodType: async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const { name } = req.body;
+    try {
+      const updated = await prisma.typefood.update({
+        where: { id: parseInt(id) },
+        data: { name },
+      });
+      return res.status(200).json(updated);
+    } catch (error: any) {
+      console.error("Error updating food type:", error);
+      return res.status(500).json({
+        message: "Failed to update food type",
+        error: error.message,
+      });
+    }
+  },
+
+  // ลบข้อมูล
+  delete_FoodType: async (req: Request, res: Response) => {
+    const { id } = req.params;
+    try {
+      const deleted = await prisma.typefood.delete({
+        where: { id: parseInt(id) },
+      });
+      return res.status(200).json({ message: "Deleted", deleted });
+    } catch (error: any) {
+      console.error("Error deleting food type:", error);
+      return res.status(500).json({
+        message: "Failed to delete food type",
+        error: error.message,
+      });
     }
   },
 };
