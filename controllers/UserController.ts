@@ -3,26 +3,16 @@ import { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 import jwt from "jsonwebtoken";
-import multer from "multer";
 import dotenv from "dotenv";
 import axios from "axios";
+import path from "path";
+import fs from "fs";
 
 dotenv.config();
 
 const prisma = new PrismaClient();
 const secret = process.env.JWT_SECRET;
-
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-
-    cb(null, 'public/uploads/user_images'); 
-  },
-  filename: function (req, file, cb) {
-
-    cb(null, Date.now() + '-' + file.originalname);
-  }
-});
-export const upload = multer({ storage: storage });
+const UPLOADS_DIR = path.resolve('uploads/menu_images');
 
 export const UserController = {
   check_username: async (req: Request, res: Response) => {
@@ -593,28 +583,25 @@ export const UserController = {
         user_email,
         user_phone,
       } = req.body;
-
-      // Validate required fields
+      // ตรวจสอบฟิลด์ที่จำเป็น
       if (!user_name || !user_pass || !user_email) {
-        return res
-          .status(400)
-          .json({
-            message:
-              "กรุณากรอกข้อมูลที่จำเป็น: user_name, user_pass, user_email",
-          });
+        return res.status(400).json({
+          message: "กรุณากรอกข้อมูลที่จำเป็น: user_name, user_pass, user_email",
+        });
       }
-
-      // Validate password length
       if (user_pass.length < 6) {
         return res
           .status(400)
           .json({ message: "รหัสผ่านต้องมีความยาวมากกว่า 6 ตัวอักษร" });
       }
-
-      // Hash the user's password for security
+      // เช็ค username ซ้ำเพื่อความปลอดภัย
+      const existingUser = await prisma.user.findUnique({
+        where: { user_name },
+      });
+      if (existingUser) {
+        return res.status(400).json({ message: "ชื่อผู้ใช้นี้ถูกใช้ไปแล้ว" });
+      }
       const hashedPass = await bcrypt.hash(user_pass, 10);
-
-      // Create a new user record in the database
       const newUser = await prisma.user.create({
         data: {
           user_name,
@@ -623,64 +610,68 @@ export const UserController = {
           user_lname,
           user_email,
           user_phone,
-          // Conditionally save the image path:
-          // If req.file exists (meaning a file was uploaded), save its path.
-          // Otherwise, set user_img to null, making it optional.
-          user_img: req.file ? req.file.path : null,
+          user_img: req.file
+            ? `uploads/user_images/${req.file.filename}`
+            : null, // ใช้ relative path สำหรับ frontend ดึงรูป
         },
       });
-
-      // Send a success response
       return res.status(200).json({
         message: "สร้างผู้ใช้สำเร็จ",
         data: newUser,
       });
     } catch (error) {
-      // Log the error for debugging purposes
-      console.error(error);
-      // Send a generic error response to the client
+      console.error(error); // Log error ใน server
       return res.status(500).json({
-        message: "เกิดข้อผิดพลาดในระบบ",
+        message: "เกิดข้อผิดพลาดในระบบ: " + (error as Error).message, // แสดงเฉพาะ message เพื่อความปลอดภัย
       });
     }
   },
-  update_user: async (req: Request, res: Response) => {
+update_user: async (req: Request, res: Response) => {
     try {
       const { user_id } = req.params;
       if (!user_id) return res.status(400).json({ message: "ไม่พบ user_id" });
-
-      const {
-        user_name,
-        user_pass,
-        user_fname,
-        user_lname,
-        user_email,
-        user_phone,
-      } = req.body;
-
-      let hashedPass;
-
+      // ใช้ optional chaining เพื่อป้องกัน req.body undefined
+      const body = req.body || {};
+      const user_name = body.user_name;
+      const user_pass = body.user_pass;
+      const user_fname = body.user_fname;
+      const user_lname = body.user_lname;
+      const user_email = body.user_email;
+      const user_phone = body.user_phone;
+      // ดึงข้อมูลผู้ใช้เดิม
+      const oldUser = await prisma.user.findUnique({
+        where: { user_id: Number(user_id) },
+        select: { user_pass: true, user_img: true },
+      });
+      if (!oldUser) {
+        return res.status(404).json({ message: "ไม่พบผู้ใช้" });
+      }
+      // จัดการรหัสผ่าน (ใช้ค่าใหม่ถ้ามี, มิฉะนั้นใช้เดิม)
+      let hashedPass = oldUser.user_pass;
       if (user_pass && user_pass.trim() !== "") {
         if (user_pass.length < 6) {
-          return res
-            .status(400)
-            .json({ message: "รหัสผ่านต้องมีความยาวมากกว่า 6 ตัวอักษร" });
+          return res.status(400).json({ message: "รหัสผ่านต้องมีความยาวมากกว่า 6 ตัวอักษร" });
         }
         hashedPass = await bcrypt.hash(user_pass, 10);
-      } else {
-        // ดึงรหัสผ่านเก่ามาใช้
-        const oldUser = await prisma.user.findUnique({
-          where: { user_id: Number(user_id) },
-          select: { user_pass: true },
-        });
-
-        if (!oldUser) {
-          return res.status(404).json({ message: "ไม่พบผู้ใช้" });
-        }
-
-        hashedPass = oldUser.user_pass;
       }
-
+      // จัดการรูปภาพ (ใช้รูปใหม่ถ้ามี, มิฉะนั้นใช้เดิม)
+      let user_img = oldUser.user_img;
+      if (req.file) {
+        // ถ้ามีรูปใหม่, ลบรูปเก่าถ้ามี
+        if (oldUser.user_img) {
+          const oldImagePath = path.resolve('uploads/user_images', path.basename(oldUser.user_img)); // สร้าง absolute path อย่างปลอดภัย
+          try {
+            if (fs.existsSync(oldImagePath)) {
+              fs.unlinkSync(oldImagePath); // ลบไฟล์เก่า
+              console.log(`ลบรูปเก่า: ${oldImagePath}`);
+            }
+          } catch (deleteError) {
+            console.error(`ไม่สามารถลบรูปเก่า: ${deleteError}`); // Log error แต่ไม่ทำให้ update ล้มเหลว
+          }
+        }
+        // ตั้งค่ารูปใหม่
+        user_img = `uploads/user_images/${req.file.filename}`;
+      }
       const updatedUser = await prisma.user.update({
         where: { user_id: Number(user_id) },
         data: {
@@ -690,54 +681,74 @@ export const UserController = {
           user_lname,
           user_email,
           user_phone,
+          user_img,
         },
       });
-
       return res.status(200).json(updatedUser);
     } catch (error) {
       console.error(error);
-      return res.status(500).json({ message: "เกิดข้อผิดพลาดในระบบ" });
+      return res.status(500).json({ message: "เกิดข้อผิดพลาดในระบบ: " + (error as Error).message });
     }
   },
   delete_user: async (req: Request, res: Response) => {
     try {
-      const { user_id } = req.params;
+      const { user_id } = req.params; // คนที่ถูกลบ
       const { password } = req.body;
-      if (!user_id) return res.status(400).json({ message: "ไม่พบ user_id" });
-
+      const loggedInUser = (req as any).user; // คนที่ลบ (จาก JWT)
+      if (!loggedInUser?.id) {
+        return res
+          .status(400)
+          .json({ message: "ไม่พบข้อมูลผู้ใช้งานที่ล๊อกอิน" });
+      }
       if (!password || password.trim() === "") {
         return res
           .status(400)
           .json({ message: "กรุณากรอกรหัสผ่านเพื่อยืนยัน" });
       }
-      const user = await prisma.user.findUnique({
-        where: { user_id: Number(user_id) },
+      const deleter = await prisma.user.findUnique({
+        where: { user_id: Number(loggedInUser.id) },
         select: { user_pass: true },
       });
-
-      if (!user) {
-        return res.status(404).json({ message: "ไม่พบผู้ใช้" });
+      if (!deleter || !deleter.user_pass) {
+        return res
+          .status(404)
+          .json({ message: "ไม่พบผู้ใช้ หรือไม่มีรหัสผ่าน" });
       }
-
-      if (user.user_pass === null) {
-        return res.status(404).json({ message: "รหัสผ่านไม่ถูกต้อง" });
-      }
-
-      const isMatch = await bcrypt.compare(password, user.user_pass);
+      const isMatch = await bcrypt.compare(password, deleter.user_pass);
       if (!isMatch) {
         return res.status(401).json({ message: "รหัสผ่านไม่ถูกต้อง" });
       }
-
+      // ดึงข้อมูลผู้ใช้ที่ถูกลบเพื่อเช็ครูปภาพ
+      const userToDelete = await prisma.user.findUnique({
+        where: { user_id: Number(user_id) },
+        select: { user_img: true },
+      });
+      if (!userToDelete) {
+        return res.status(404).json({ message: "ไม่พบผู้ใช้ที่ต้องการลบ" });
+      }
+      // ลบรูปภาพถ้ามี
+      if (userToDelete.user_img) {
+        const imagePath = path.resolve('uploads/user_images', path.basename(userToDelete.user_img)); // สร้าง absolute path อย่างปลอดภัย
+        try {
+          if (fs.existsSync(imagePath)) {
+            fs.unlinkSync(imagePath); // ลบไฟล์
+            console.log(`ลบรูปโปรไฟล์: ${imagePath}`);
+          }
+        } catch (deleteError) {
+          console.error(`ไม่สามารถลบรูปโปรไฟล์: ${deleteError}`); // Log error แต่ไม่ทำให้การลบผู้ใช้ล้มเหลว
+        }
+      }
+      // ลบผู้ใช้จากฐานข้อมูล
       const deletedUser = await prisma.user.delete({
         where: { user_id: Number(user_id) },
       });
-
       return res.status(200).json(deletedUser);
     } catch (error) {
-      console.error(error);
-      return res.status(500).json({ message: "เกิดข้อผิดพลาดในระบบ", error });
+      console.error("Delete user error:", error);
+      return res.status(500).json({ message: "เกิดข้อผิดพลาดในระบบ", error: (error as Error).message }); // ปรับให้แสดงเฉพาะ message เพื่อความปลอดภัย
     }
   },
+
   add_seat: async (req: Request, res: Response) => {
     const { seats } = req.body;
 
@@ -1202,6 +1213,321 @@ export const UserController = {
       console.error("Error deleting food type:", error);
       return res.status(500).json({
         message: "Failed to delete food type",
+        error: error.message,
+      });
+    }
+  },
+  menus: async (req: Request, res: Response) => {
+    try {
+      const menus = await prisma.foodMenu.findMany({
+        include: {
+          MenuImages: true,
+          Typefoods: {
+            include: {
+              typefood: true,
+            },
+          },
+        },
+      });
+      return res.status(200).json(menus);
+    } catch (error: any) {
+      console.error("Error fetching menus:", error);
+      return res
+        .status(500)
+        .json({ message: "Failed to fetch menus", error: error.message });
+    }
+  },
+  add_menu: async (req: Request, res: Response) => {
+    // ดึง mainImageIndex ออกมาจาก req.body ด้วย
+    const { menu_name, menu_price, menu_description, typefoodIds, mainImageIndex } = req.body;
+
+    // Parse inputs (assuming typefoodIds is a JSON array string or array)
+    let parsedTypefoodIds: number[] = [];
+    if (typeof typefoodIds === 'string') {
+      try {
+        parsedTypefoodIds = JSON.parse(typefoodIds).map((id: any) => parseInt(id));
+      } catch (e) {
+        return res.status(400).json({ message: "Invalid typefoodIds format" });
+      }
+    } else if (Array.isArray(typefoodIds)) {
+      parsedTypefoodIds = typefoodIds.map((id: any) => parseInt(id));
+    }
+
+    // Handle uploaded files (multiple images)
+    const files = req.files as Express.Multer.File[] | undefined;
+    const imagePaths = files
+      ? files.map((file) => `/uploads/menu_images/${file.filename}`)
+      : [];
+
+    // แปลง mainImageIndex ให้เป็นตัวเลข (ถ้ามี)
+    let parsedMainImageIndex: number | null = null;
+    if (mainImageIndex !== undefined && mainImageIndex !== null) {
+      parsedMainImageIndex = parseInt(mainImageIndex as string, 10);
+      if (isNaN(parsedMainImageIndex)) {
+        parsedMainImageIndex = null; // ตั้งเป็น null ถ้าแปลงเป็นตัวเลขไม่ได้
+      }
+    }
+
+    try {
+      const newMenu = await prisma.foodMenu.create({
+        data: {
+          menu_name,
+          menu_price: parseInt(menu_price), // Ensure price is integer
+          menu_description: menu_description || null, // ตรวจสอบว่ามีค่า description หรือไม่ ถ้าไม่มีให้เป็น null
+          menu_status: 1, // สถานะของเมนูโดยรวม (อาจจะเป็น 1 เสมอเมื่อสร้างใหม่)
+
+          Typefoods: {
+            create: parsedTypefoodIds.map((id) => ({
+              typefood: {
+                connect: { id },
+              },
+            })),
+          },
+          MenuImages: {
+            create: imagePaths.map((path, index) => ({ // เพิ่ม index เข้ามาในการ map
+              menu_image: path,
+              // ตั้งค่า menu_status เป็น 1 ถ้าเป็นรูปหลัก, มิฉะนั้นเป็น 0
+              menu_status: (parsedMainImageIndex !== null && index === parsedMainImageIndex) ? 1 : 0,
+            })),
+          },
+        },
+        include: {
+          MenuImages: true,
+          Typefoods: {
+            include: {
+              typefood: true,
+            },
+          },
+        },
+      });
+      return res.status(200).json(newMenu);
+    } catch (error: any) {
+      console.error("Error creating menu:", error);
+      // เพิ่ม Logic ในการลบไฟล์ที่อัปโหลดไปแล้วหากเกิดข้อผิดพลาด
+      if (files && files.length > 0) {
+        files.forEach(file => {
+          const filePath = path.join(__dirname, '../../uploads/menu_images', file.filename); // ปรับ path ตามโครงสร้างโปรเจกต์ของคุณ
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Deleted uploaded file: ${filePath}`);
+          }
+        });
+      }
+      return res
+        .status(500)
+        .json({ message: "Failed to create menu", error: error.message });
+    }
+  },
+  update_menu: async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const menuId = parseInt(id);
+
+    const newFiles = req.files as Express.Multer.File[];
+
+    try {
+      const { menu_name, menu_price, menu_description, typefoodIds, existingImages, mainImageIdentifier } = req.body;
+
+      if (isNaN(menuId)) {
+        return res.status(400).json({ message: "Invalid Menu ID." });
+      }
+
+      if (!menu_name || !menu_price || !typefoodIds) {
+        return res.status(400).json({ message: "Missing required menu fields (name, price, types)." });
+      }
+
+      const parsedTypefoodIds: number[] = JSON.parse(typefoodIds);
+      // parsedExistingImages คือรูปที่ Frontend บอกว่า "ยังคงอยู่"
+      const parsedExistingImages: { menu_image_id?: number; menu_image: string; menu_status: number }[] = existingImages ? JSON.parse(existingImages) : [];
+
+      // 1. ดึงข้อมูลเมนูเดิมและรูปภาพปัจจุบันจาก DB
+      const currentMenu = await prisma.foodMenu.findUnique({
+        where: { menu_id: menuId },
+        include: { MenuImages: true },
+      });
+
+      if (!currentMenu) {
+        return res.status(404).json({ message: "Menu not found." });
+      }
+
+      const currentDbImages = currentMenu.MenuImages;
+      const imagesToKeepFromFrontendIds = new Set(parsedExistingImages.map(img => img.menu_image_id).filter(id => id !== undefined));
+
+      // 2. จัดการรูปภาพ: ลบ Record รูปภาพที่ Frontend บอกว่าไม่ต้องการแล้วออกจาก DB และ **ลบไฟล์จริง** ออกจาก Server
+      for (const dbImage of currentDbImages) {
+        if (!imagesToKeepFromFrontendIds.has(dbImage.menu_image_id)) {
+          // ลบ Record จาก DB
+          await prisma.menuImage.delete({
+            where: { menu_image_id: dbImage.menu_image_id },
+          });
+
+          // *** เพิ่มส่วนนี้เพื่อลบไฟล์จริงออกจาก Server ***
+          const imagePathToDelete = path.join(UPLOADS_DIR, path.basename(dbImage.menu_image));
+          if (fs.existsSync(imagePathToDelete)) {
+            try {
+              fs.unlinkSync(imagePathToDelete);
+              console.log(`Deleted old menu image file: ${imagePathToDelete}`);
+            } catch (fileDeleteError: any) {
+              console.error(`Failed to delete file ${imagePathToDelete}: ${fileDeleteError.message}`);
+              // ไม่จำเป็นต้อง throw error ตรงนี้ เพราะการลบ DB record สำเร็จแล้ว
+            }
+          } else {
+            console.warn(`File not found for deletion: ${imagePathToDelete} (might already be deleted or path is incorrect)`);
+          }
+          // ***********************************************
+        }
+      }
+
+      // 3. เพิ่มรูปภาพใหม่ที่อัปโหลด (ถ้ามี)
+      const newImageRecords: { menu_image: string; menu_id: number; menu_status: number }[] = [];
+      for (const file of newFiles) {
+        const filePath = `/uploads/menu_images/${file.filename}`;
+        newImageRecords.push({
+          menu_image: filePath,
+          menu_id: menuId,
+          menu_status: 0,
+        });
+      }
+
+      if (newImageRecords.length > 0) {
+        await prisma.menuImage.createMany({
+          data: newImageRecords,
+        });
+      }
+
+      // 4. อัปเดตเมนูหลัก
+      const updatedMenu = await prisma.foodMenu.update({
+        where: { menu_id: menuId },
+        data: {
+          menu_name: menu_name,
+          menu_price: parseInt(menu_price),
+          menu_description: menu_description || null,
+        },
+      });
+
+      // 5. อัปเดตความสัมพันธ์ Many-to-Many สำหรับประเภทอาหาร
+      await prisma.foodMenuType.deleteMany({
+        where: { foodMenuId: menuId },
+      });
+      const newTypeFoodRelations = parsedTypefoodIds.map((typeId: number) => ({
+        foodMenuId: menuId,
+        typefoodId: typeId,
+      }));
+      if (newTypeFoodRelations.length > 0) {
+        await prisma.foodMenuType.createMany({
+          data: newTypeFoodRelations,
+        });
+      }
+
+      // 6. จัดการรูปภาพหลัก (หลังจากเพิ่มและลบ Record รูปภาพแล้ว)
+      // ดึงรูปภาพทั้งหมดที่เหลืออยู่ใน DB (เดิมที่ยังอยู่ + ใหม่ที่เพิ่งเพิ่ม)
+      const allCurrentImages = await prisma.menuImage.findMany({
+        where: { menu_id: menuId },
+      });
+
+      // ตั้งค่า menu_status ของรูปภาพทั้งหมดให้เป็น 0 ก่อน
+      await prisma.menuImage.updateMany({
+        where: { menu_id: menuId },
+        data: { menu_status: 0 },
+      });
+
+      if (mainImageIdentifier) {
+        // กรณีรูปหลักเป็นรูปเดิม (ส่งมาเป็น path)
+        if (typeof mainImageIdentifier === 'string' && mainImageIdentifier.startsWith('/uploads/menu_images')) {
+          await prisma.menuImage.updateMany({
+            where: {
+              menu_id: menuId,
+              menu_image: mainImageIdentifier,
+            },
+            data: { menu_status: 1 },
+          });
+        } else { // กรณีรูปหลักเป็นรูปใหม่ (ส่งมาเป็น index ของ newFiles)
+          const mainImageIndexAsNumber = parseInt(mainImageIdentifier as string);
+          if (!isNaN(mainImageIndexAsNumber) && newFiles.length > mainImageIndexAsNumber) {
+            const mainNewImageFilename = newFiles[mainImageIndexAsNumber].filename;
+            const mainNewImagePath = `/uploads/menu_images/${mainNewImageFilename}`;
+
+            await prisma.menuImage.updateMany({
+              where: {
+                menu_id: menuId,
+                menu_image: mainNewImagePath,
+              },
+              data: { menu_status: 1 },
+            });
+          }
+        }
+      } else if (allCurrentImages.length === 1) {
+        // ถ้าเหลือรูปเดียว ให้ตั้งเป็นรูปหลักโดยอัตโนมัติ
+        await prisma.menuImage.update({
+          where: { menu_image_id: allCurrentImages[0].menu_image_id },
+          data: { menu_status: 1 },
+        });
+      }
+
+      res.status(200).json({ message: "Menu updated successfully.", menu: updatedMenu });
+
+    } catch (error: any) {
+      console.error("Error updating menu:", error);
+      // ควรมีการ rollback รูปภาพใหม่ที่อัปโหลดไปแล้วหากเกิดข้อผิดพลาดใน DB transaction
+      // ส่วนนี้ยังคงต้องลบไฟล์ใหม่ที่อัปโหลดหากเกิด error เพราะมันยังไม่มี Record ใน DB
+      if (newFiles && newFiles.length > 0) {
+        newFiles.forEach(file => {
+          const filePath = path.join(UPLOADS_DIR, file.filename);
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Cleaned up uploaded file due to error: ${filePath}`);
+          }
+        });
+      }
+      res.status(500).json({
+        message: "Failed to update menu.",
+        error: error.message,
+      });
+    }
+  },
+  delete_menu: async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const menuId = parseInt(id);
+
+    try {
+      // 1. ดึงข้อมูลรูปภาพทั้งหมดของเมนูนี้ก่อนทำการลบเมนู
+      const menuImagesToDelete = await prisma.menuImage.findMany({
+        where: { menu_id: menuId },
+        select: { menu_image: true }, // เลือกเฉพาะ field ที่เก็บ path ของรูปภาพ
+      });
+
+      // 2. ลบเมนูออกจากฐานข้อมูล
+      // การลบ foodMenu จะ trigger onDelete: Cascade ใน MenuImage และ FoodMenuType
+      const deletedMenu = await prisma.foodMenu.delete({
+        where: { menu_id: menuId },
+      });
+
+      // 3. ลบไฟล์รูปภาพจริงออกจากระบบไฟล์
+      if (menuImagesToDelete.length > 0) {
+        menuImagesToDelete.forEach((image) => {
+          // สร้าง absolute path ของไฟล์รูปภาพ
+          // ตรวจสอบให้แน่ใจว่า 'uploads/menu_images' คือ path ที่ถูกต้องของ Folder รูปภาพ
+          const imagePath = path.resolve('uploads/menu_images', path.basename(image.menu_image));
+          
+          try {
+            if (fs.existsSync(imagePath)) {
+              fs.unlinkSync(imagePath); // ลบไฟล์
+              console.log(`ลบรูปเมนู: ${imagePath}`);
+            } else {
+              console.warn(`ไม่พบไฟล์รูปเมนูที่ path: ${imagePath} (อาจถูกลบไปแล้วหรือ path ผิด)`);
+            }
+          } catch (fileDeleteError) {
+            console.error(`ไม่สามารถลบไฟล์รูปเมนู: ${imagePath}, ข้อผิดพลาด: ${fileDeleteError}`);
+            // คุณอาจต้องการส่ง error กลับไปให้ client ด้วย แต่ไม่ทำให้การลบเมนูล้มเหลว
+          }
+        });
+      }
+
+      return res.status(200).json({ message: "ลบเมนูและรูปภาพที่เกี่ยวข้องสำเร็จ", deleted: deletedMenu });
+
+    } catch (error: any) {
+      console.error("Error deleting menu:", error);
+      return res.status(500).json({
+        message: "ไม่สามารถลบเมนูได้",
         error: error.message,
       });
     }

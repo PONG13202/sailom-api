@@ -68,25 +68,36 @@ model TableType {
 }
 
 model Typefood {
-  id          Int        @id @default(autoincrement())
-  name        String     @unique
-  type_status Int        @default(1)
-  FoodMenus   FoodMenu[]
+  id          Int          @id @default(autoincrement())
+  name        String       @unique
+  type_status Int          @default(1)
+  FoodMenus   FoodMenuType[]
 }
 
 model FoodMenu {
-  menu_id     Int      @id @default(autoincrement())
-  menu_name   String
-  menu_price  Int
-  menu_status Int      @default(1)
-  typefood    Typefood @relation(fields: [typefoodId], references: [id]) // กำหนดความสัมพันธ์
-  typefoodId  Int
-  MenuImages  MenuImage[]
+  menu_id        Int           @id @default(autoincrement())
+  menu_name      String
+  menu_price     Int
+  menu_description String?
+  menu_status    Int           @default(1)
+  MenuImages     MenuImage[]
+  Typefoods      FoodMenuType[]
 }
+
+// ตารางกลางสำหรับความสัมพันธ์ Many-to-Many
+model FoodMenuType {
+  foodMenuTypeId Int          @id @default(autoincrement()) // Primary Key ของตารางเชื่อมโยง
+  foodMenuId     Int
+  typefoodId     Int
+  foodMenu       FoodMenu     @relation(fields: [foodMenuId], references: [menu_id], onDelete: Cascade)
+  typefood       Typefood     @relation(fields: [typefoodId], references: [id], onDelete: Cascade)
+}
+
 model MenuImage {
-  menu_image_id Int  @id @default(autoincrement())
+  menu_image_id Int      @id @default(autoincrement())
   menu_id       Int
   menu_image    String
-  menu_status   Int @default(0)
+  menu_status   Int      @default(0)
   foodMenu      FoodMenu @relation(fields: [menu_id], references: [menu_id], onDelete: Cascade)
 }
+

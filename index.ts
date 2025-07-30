@@ -1,9 +1,11 @@
+// C:\Users\pong1\OneDrive\เอกสาร\End-Pro\api\index.ts
 import express, { Request, Response, NextFunction  } from 'express';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import cors from 'cors'; 
-import { UserController, upload } from './controllers/UserController'; 
-
+import { UserController} from './controllers/UserController'; 
+import multer from 'multer';
+import path from 'path';
 
 dotenv.config();
 
@@ -12,7 +14,33 @@ const port = 3001;
 app.use(cors());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(express.static('public'));
+
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/user_images');
+  },
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}-${file.originalname}`);
+  },
+});
+const upload = multer({ storage });
+
+const menuStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    // กำหนดโฟลเดอร์ปลายทางสำหรับไฟล์รูปภาพเมนู
+    // ตรวจสอบให้แน่ใจว่า 'uploads/menu_images' directory มีอยู่จริงใน root ของโปรเจกต์ API
+    cb(null, 'uploads/menu_images');
+  },
+  filename: (req, file, cb) => {
+    // ตั้งชื่อไฟล์ให้ไม่ซ้ำกันโดยใช้ timestamp, random number และนามสกุลไฟล์เดิม
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const fileExtension = path.extname(file.originalname);
+    cb(null, `menu-${uniqueSuffix}${fileExtension}`); // ตัวอย่าง: menu-1700000000-123456789.png
+  },
+});
+const uploadMenuImage = multer({ storage: menuStorage });
 
 const authenticateToken = (req: Request, res: Response, next: NextFunction): void => {
   const authHeader = req.headers['authorization'];
@@ -33,6 +61,38 @@ const authenticateToken = (req: Request, res: Response, next: NextFunction): voi
     next();
   });
 };
+app.get('/menus', (req: Request, res: Response) => {
+  try {
+    UserController.menus(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+})
+app.post('/add_menu', uploadMenuImage.array('images', 10), async (req: Request, res: Response) => {
+  try {
+    await UserController.add_menu(req, res);
+  } catch (error) {
+    console.error("Error in /add_menu route:", error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+app.put('/update_menu/:id', uploadMenuImage.array('newImages', 10), async (req: Request, res: Response) => {
+  try {
+    await UserController.update_menu(req, res); // ใช้ UserController ที่ import มา
+  } catch (error) {
+    console.error("Error in /update_menu route:", error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+}); 
+
+app.delete('/delete_menu/:id', async (req: Request, res: Response) => {
+  try {
+    await UserController.delete_menu(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
 app.post('/register', async (req: Request, res: Response) => {
   try {
     await UserController.register(req, res);
@@ -75,7 +135,7 @@ app.get('/check_email', async (req: Request, res: Response) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
-app.post('/add_user', authenticateToken, upload.single('user_img'), async (req: Request, res: Response) => {
+app.post('/add_user', upload.single('user_img'), authenticateToken, async (req: Request, res: Response) => { // เปลี่ยนเป็น 'user_img' เพื่อตรงกับ frontend
   try {
     await UserController.add_user(req, res);
   } catch (error) {
@@ -97,7 +157,7 @@ app.get('/info',authenticateToken, async (req: Request, res: Response) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
-app.put('/update_user/:user_id',authenticateToken, async ( req: Request, res: Response) => {
+app.put('/update_user/:user_id',upload.single('user_img'),authenticateToken, async ( req: Request, res: Response) => {
   try {
     await UserController.update_user(req, res);
   } catch (error) {
@@ -223,6 +283,8 @@ app.delete('/delete_FoodType/:id', async (req: Request, res: Response) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 })
+
+
 app.listen(port, () => {
   console.log(`app listening on port ${port}`);
 });
