@@ -4,18 +4,33 @@ import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import cors from 'cors'; 
 import { UserController} from './controllers/UserController'; 
+import { FrontController } from './controllers/FrontController';
 import multer from 'multer';
 import path from 'path';
+import http from 'http';
+import { Server } from 'socket.io';
+
+
 
 dotenv.config();
 
 const app = express();
-const port = 3001;
+const port = 5000;
 app.use(cors());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: ["http://localhost:3000", "http://localhost:3001"], // ← array แทน string เดี่ยว
+    methods: ["GET", "POST", "PUT", "DELETE"],
+  }
+});
+io.on("connection", (socket) => {
+  console.log("Client connected:", socket.id);
+});
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -25,6 +40,8 @@ const storage = multer.diskStorage({
     cb(null, `${Date.now()}-${file.originalname}`);
   },
 });
+export { io };
+
 const upload = multer({ storage });
 
 const menuStorage = multer.diskStorage({
@@ -61,13 +78,64 @@ const authenticateToken = (req: Request, res: Response, next: NextFunction): voi
     next();
   });
 };
-app.get('/menus', (req: Request, res: Response) => {
+app.get('/check_user',async (req: Request, res: Response) => {
   try {
-    UserController.menus(req, res);
+    await FrontController.check_user(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+app.get('/check_mail', async (req: Request, res: Response) => {
+  try {
+    await FrontController.check_mail(req, res);
   } catch (error) {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 })
+app.post('/signin', async (req: Request, res: Response) => {
+  try {
+    await FrontController.signin(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+app.post('/signup', upload.single('user_img'), async (req: Request, res: Response) => {
+  try {
+    await FrontController.signup(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+app.post('/google_signin', async (req: Request, res: Response) => {
+  try {
+    await FrontController.google_signin(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+app.post('/add_profile',authenticateToken, upload.single('user_img'), async (req: Request, res: Response) => {
+  try {
+    await FrontController.add_profile(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+
+
+
+
+
+
+
+
+app.get('/menus', async (req: Request, res: Response) => {
+  try {
+    await UserController.menus(req, res);
+  } catch (error) {
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
 app.post('/add_menu', uploadMenuImage.array('images', 10), async (req: Request, res: Response) => {
   try {
     await UserController.add_menu(req, res);
@@ -93,7 +161,7 @@ app.delete('/delete_menu/:id', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/register', async (req: Request, res: Response) => {
+app.post('/register',upload.single('user_img'), async (req: Request, res: Response) => {
   try {
     await UserController.register(req, res);
   } catch (error) {
@@ -285,6 +353,6 @@ app.delete('/delete_FoodType/:id', async (req: Request, res: Response) => {
 })
 
 
-app.listen(port, () => {
-  console.log(`app listening on port ${port}`);
+server.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
 });

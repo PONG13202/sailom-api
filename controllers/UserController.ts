@@ -7,7 +7,7 @@ import dotenv from "dotenv";
 import axios from "axios";
 import path from "path";
 import fs from "fs";
-
+import { io } from '../index';
 dotenv.config();
 
 const prisma = new PrismaClient();
@@ -66,8 +66,11 @@ export const UserController = {
     }
   },
 
-  register: async (req: Request, res: Response) => {
+register: async (req: Request, res: Response) => {
+
     try {
+      // Use upload.single('user_profile_picture') as middleware before this controller
+      // The file will be available at req.file
       const {
         user_name,
         user_pass,
@@ -75,10 +78,12 @@ export const UserController = {
         user_lname,
         user_email,
         user_phone,
-        user_img,
         user_status,
         google_id,
       } = req.body;
+
+      // The uploaded file object
+      const user_img_path = req.file ? `uploads/user_images/${req.file.filename}` : null;
 
       if (!user_email) {
         return res.status(400).json({ message: "กรุณาระบุอีเมล" });
@@ -100,7 +105,7 @@ export const UserController = {
       const existingUser = await prisma.user.findFirst({
         where: {
           OR: [
-            user_name && !google_id ? { user_name } : undefined, // ไม่ตรวจสอบ user_name ถ้าเป็น Google
+            user_name && !google_id ? { user_name } : undefined,
             { user_email },
             google_id ? { google_id } : undefined,
           ].filter(Boolean) as any,
@@ -108,6 +113,13 @@ export const UserController = {
       });
 
       if (existingUser) {
+        // If a file was uploaded, remove it if the user already exists
+        if (req.file) {
+          fs.unlink(req.file.path, (err) => {
+            if (err) console.error("Error deleting uploaded file:", err);
+          });
+        }
+
         if (user_name && existingUser.user_name === user_name && !google_id) {
           return res.status(400).json({ message: "ชื่อผู้ใช้นี้ถูกใช้ไปแล้ว" });
         }
@@ -130,17 +142,21 @@ export const UserController = {
       // สร้างผู้ใช้ใหม่
       const newUser = await prisma.user.create({
         data: {
-          user_name: google_id ? null : user_name, // ไม่ใช้ user_name สำหรับ Google
+          user_name: google_id ? null : user_name,
           user_pass: hashedPassword,
           user_fname: user_fname || null,
           user_lname: user_lname || null,
           user_email,
           user_phone: user_phone || null,
-          user_img: user_img || null,
+          user_img: user_img_path, // Save the path to the uploaded image
           user_status: user_status ?? 1,
           google_id: google_id || null,
         },
       });
+      req.app.get("io").emit("new_user", {
+      user_id: newUser.user_id,
+      user_email: newUser.user_email,
+    });
 
       return res.status(200).json({
         message: "สมัครสมาชิกสำเร็จ",
@@ -152,14 +168,20 @@ export const UserController = {
           user_email: newUser.user_email,
           user_phone: newUser.user_phone,
           user_status: newUser.user_status,
-          user_img: newUser.user_img,
+          user_img: newUser.user_img, // Return the image path
         },
       });
     } catch (error) {
       console.error("Error during registration:", error);
+      // If an error occurs after file upload but before saving to DB, delete the file
+      if (req.file) {
+        fs.unlink(req.file.path, (err) => {
+          if (err) console.error("Error deleting uploaded file on registration error:", err);
+        });
+      }
       return res
         .status(500)
-        .json({ message: "เกิดข้อผิดพลาดในการสมัครสมาชิก" });
+        .json({ message: "เกิดข้อผิดพลาดในการสมัครสมาชิก: " + (error as Error).message });
     }
   },
   google_login: async (req: Request, res: Response) => {
@@ -262,7 +284,7 @@ export const UserController = {
             isAdmin: true,
           },
           process.env.JWT_SECRET!,
-          { expiresIn: "1d" }
+          { expiresIn: "20s" }
         );
 
         const { google_id, ...safeUser } = existingUser;
@@ -287,7 +309,7 @@ export const UserController = {
           incompleteProfile: true,
         },
         process.env.JWT_SECRET!,
-        { expiresIn: "10m" }
+        { expiresIn: "5m" }
       );
 
       return res.status(200).json({
