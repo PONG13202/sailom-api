@@ -26,33 +26,36 @@ model User {
   user_status Int     @default(1)
   google_id   String? @unique
   admin       Admin[]
+  staff       Staff[]
 }
 
 model Admin {
   admin_id     Int  @id @default(autoincrement())
-  user_id      Int
+  user_id      Int  @unique
   admin_status Int  @default(1)
   user         User @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
 }
 
+model Staff {
+  staff_id     Int  @id @default(autoincrement())
+  user_id      Int  @unique
+  staff_status Int  @default(1)
+  user         User @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+}
+
 model TableMap {
-  id     Int     @id @default(autoincrement())
-  label  String  @unique
-  x      Int     @default(0)
-  y      Int     @default(0)
-  active Boolean @default(true)
-
-  seatOptionId Int?
-  seatOption   SeatOption? @relation(fields: [seatOptionId], references: [id])
-
-  tableTypeId Int?
-  tableType   TableType? @relation(fields: [tableTypeId], references: [id])
-
-  // เปลี่ยนจาก tags (ที่เป็น TableTag[]) เป็น additionalInfo (String?)
-  additionalInfo String? // <--- Field สำหรับ Textarea/ข้อความเพิ่มเติม
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             Int         @id @default(autoincrement())
+  label          String      @unique
+  x              Float       @default(0) // 0..1
+  y              Float       @default(0) // 0..1
+  active         Boolean     @default(true)
+  seatOptionId   Int?
+  seatOption     SeatOption? @relation(fields: [seatOptionId], references: [id])
+  tableTypeId    Int?
+  tableType      TableType?  @relation(fields: [tableTypeId], references: [id])
+  additionalInfo String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
 }
 
 model SeatOption {
@@ -68,29 +71,29 @@ model TableType {
 }
 
 model Typefood {
-  id          Int          @id @default(autoincrement())
-  name        String       @unique
-  type_status Int          @default(1)
+  id          Int            @id @default(autoincrement())
+  name        String         @unique
+  type_status Int            @default(1)
   FoodMenus   FoodMenuType[]
 }
 
 model FoodMenu {
-  menu_id        Int           @id @default(autoincrement())
-  menu_name      String
-  menu_price     Int
+  menu_id          Int            @id @default(autoincrement())
+  menu_name        String
+  menu_price       Int
   menu_description String?
-  menu_status    Int           @default(1)
-  MenuImages     MenuImage[]
-  Typefoods      FoodMenuType[]
+  menu_status      Int            @default(1)
+  MenuImages       MenuImage[]
+  Typefoods        FoodMenuType[]
 }
 
 // ตารางกลางสำหรับความสัมพันธ์ Many-to-Many
 model FoodMenuType {
-  foodMenuTypeId Int          @id @default(autoincrement()) // Primary Key ของตารางเชื่อมโยง
+  foodMenuTypeId Int      @id @default(autoincrement()) // Primary Key ของตารางเชื่อมโยง
   foodMenuId     Int
   typefoodId     Int
-  foodMenu       FoodMenu     @relation(fields: [foodMenuId], references: [menu_id], onDelete: Cascade)
-  typefood       Typefood     @relation(fields: [typefoodId], references: [id], onDelete: Cascade)
+  foodMenu       FoodMenu @relation(fields: [foodMenuId], references: [menu_id], onDelete: Cascade)
+  typefood       Typefood @relation(fields: [typefoodId], references: [id], onDelete: Cascade)
 }
 
 model MenuImage {
@@ -101,3 +104,9 @@ model MenuImage {
   foodMenu      FoodMenu @relation(fields: [menu_id], references: [menu_id], onDelete: Cascade)
 }
 
+model GridSize {
+  id        Int      @id @default(1) // Fixed ID to ensure a single record
+  rows      Int      @default(10) // Number of rows (default 10)
+  cols      Int      @default(10) // Number of columns (default 10)
+  updatedAt DateTime @updatedAt
+}
