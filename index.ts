@@ -17,7 +17,8 @@ const port = 5000;
 app.use(cors());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.use("/uploads", express.static(path.resolve("uploads")));
+
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -38,10 +39,9 @@ const storage = multer.diskStorage({
     cb(null, `${Date.now()}-${file.originalname}`);
   },
 });
-export { io };
+
 
 const upload = multer({ storage });
-
 const menuStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     // กำหนดโฟลเดอร์ปลายทางสำหรับไฟล์รูปภาพเมนู
@@ -57,6 +57,22 @@ const menuStorage = multer.diskStorage({
 });
 const uploadMenuImage = multer({ storage: menuStorage });
 
+// เพิ่มuploads/slide_images
+// --- slides upload storage (มีอยู่แล้ว) ---
+const slideStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, "uploads/slide_images"),
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    const fileExtension = path.extname(file.originalname);
+    cb(null, `slide-${uniqueSuffix}${fileExtension}`);
+  },
+});
+
+// เพิ่มบรรทัดนี้
+const uploadSlide = multer({ storage: slideStorage });
+
+
+export { io };
 const authenticateToken = (
   req: Request,
   res: Response,
@@ -80,6 +96,13 @@ const authenticateToken = (
     next();
   });
 };
+app.post("/verify_password", authenticateToken, async (req: Request, res: Response) => {
+  try {
+    await UserController.verify_password(req, res);
+  } catch (error) {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
 app.get("/check_user", async (req: Request, res: Response) => {
   try {
     await FrontController.check_user(req, res);
@@ -409,6 +432,35 @@ app.delete("/delete_FoodType/:id", async (req: Request, res: Response) => {
     res.status(500).json({ message: "Internal Server Error" });
   }
 });
+
+app.get("/slides", async (req: Request, res: Response) => {
+  try {
+    await UserController.slides(req, res);
+  } catch (error) {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+app.post("/add_slide",uploadSlide.single("image"), async (req: Request, res: Response) => {
+  try {
+    await UserController.add_slide(req, res);
+  } catch (error) {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
+app.put("/update_slide/:id",uploadSlide.single("image"), async (req: Request, res: Response) => {
+  try {
+    await UserController.update_slide(req, res);
+  } catch (error) {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
+app.delete("/delete_slide/:id", async (req: Request, res: Response) => {
+  try {
+    await UserController.delete_slide(req, res);
+  } catch (error) {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
 
 server.listen(port, () => {
   console.log(`Server is running on port ${port}`);

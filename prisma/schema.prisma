@@ -110,3 +110,12 @@ model GridSize {
   cols      Int      @default(10) // Number of columns (default 10)
   updatedAt DateTime @updatedAt
 }
+
+model Slide{
+  slide_id Int @id @default(autoincrement())
+  slide_name String
+  slide_img String
+  slide_status Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

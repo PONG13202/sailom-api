@@ -12,7 +12,11 @@ dotenv.config();
 
 const prisma = new PrismaClient();
 const secret = process.env.JWT_SECRET;
+// api\uploads\menu_images
 const UPLOADS_DIR = path.resolve("uploads/menu_images");
+// api\uploads\slide_images
+const SLIDE_UPLOADS_DIR = path.resolve("uploads/slide_images");
+
 const buildRoles = (
   isAdmin: boolean,
   isStaff: boolean
@@ -27,6 +31,67 @@ export const ROLE_VALUES = ["admin", "staff", "user"] as const;
 export type Role = (typeof ROLE_VALUES)[number];
 
 export const UserController = {
+  verify_password: async (req: Request, res: Response) => {
+    try {
+      const { password } = req.body;
+      if (!password || typeof password !== "string") {
+        return res.status(400).json({ message: "กรุณากรอกรหัสผ่าน" });
+      }
+
+      // ดึง claims ตรงๆจาก middleware (ห้ามไว้วางใจชื่อ field เดียว)
+      const claims: any = (req as any).user || {};
+
+      // พยายาม extract user id จากหลายๆ field ที่พบบ่อยใน JWT
+      const pickId = (v: unknown): number | undefined => {
+        if (typeof v === "number" && Number.isFinite(v)) return v;
+        if (typeof v === "string" && /^\d+$/.test(v)) return parseInt(v, 10);
+        return undefined;
+      };
+
+      const actorId =
+        pickId(claims.user_id) ??
+        pickId(claims.userId) ??
+        pickId(claims.id) ??
+        pickId(claims.sub);
+
+      // หา user ตาม actorId ก่อน ถ้าไม่มีลอง fallback ด้วย email (ถ้า token มี)
+      let user =
+        actorId !== undefined
+          ? await prisma.user.findUnique({
+              where: { user_id: actorId },
+              select: { user_id: true, user_pass: true },
+            })
+          : null;
+
+      if (!user && typeof claims.email === "string" && claims.email) {
+        user = await prisma.user.findUnique({
+          where: { user_email: claims.email },
+          select: { user_id: true, user_pass: true },
+        });
+      }
+
+      if (!user) {
+        // ยังยืนยันตัวตนไม่ได้เพราะไม่มีวิธีผูก token กับผู้ใช้ในระบบ
+        return res.status(401).json({ message: "ไม่ได้รับอนุญาต" });
+      }
+
+      if (!user.user_pass) {
+        return res.status(400).json({
+          message: "ผู้ใช้นี้ไม่ได้ตั้งรหัสผ่าน (เข้าสู่ระบบด้วย Google)",
+        });
+      }
+
+      const isPasswordMatch = await bcrypt.compare(password, user.user_pass);
+      if (!isPasswordMatch) {
+        return res.status(401).json({ message: "รหัสผ่านไม่ถูกต้อง" });
+      }
+
+      return res.status(200).json({ message: "ยืนยันรหัสผ่านสำเร็จ" });
+    } catch (error) {
+      console.error("Error verifying password:", error);
+      return res.status(500).json({ message: "Internal Server Error" });
+    }
+  },
   check_username: async (req: Request, res: Response) => {
     try {
       const { user_name } = req.query;
@@ -1808,4 +1873,234 @@ export const UserController = {
       });
     }
   },
+
+  // ===== Slides API =====
+  slides: async (req: Request, res: Response) => {
+    try {
+      const items = await prisma.slide.findMany({
+        orderBy: { slide_id: "asc" },
+      });
+      return res.status(200).json(items);
+    } catch (error: any) {
+      console.error("Error fetching slides:", error);
+      return res
+        .status(500)
+        .json({ message: "ไม่สามารถดึงข้อมูลสไลด์ได้", error: error.message });
+    }
+  },
+  add_slide: async (req: Request, res: Response) => {
+    // ต้องมี middleware multer: upload.single('image')
+    try {
+      const nameRaw =
+        (req.body?.name as string) ?? (req.body?.slide_name as string) ?? "";
+      const slide_name = nameRaw.trim();
+
+      if (!slide_name) {
+        // ถ้าอัปโหลดไฟล์มาแล้วแต่ชื่อไม่ถูกต้อง ให้ลบไฟล์ทิ้ง
+        if (req.file) {
+          const p = path.join(SLIDE_UPLOADS_DIR, req.file.filename);
+          try {
+            if (fs.existsSync(p)) fs.unlinkSync(p);
+          } catch {}
+        }
+        return res.status(400).json({ message: "กรุณากรอกชื่อสไลด์" });
+      }
+
+      // แปลงสถานะให้เป็น 0/1 รองรับ true/false หรือ "1"/"0"
+      const rawStatus = req.body?.status ?? req.body?.slide_status ?? 1;
+      const slide_status =
+        String(rawStatus).toLowerCase() === "true"
+          ? 1
+          : String(rawStatus).toLowerCase() === "false"
+          ? 0
+          : Number(rawStatus)
+          ? 1
+          : 0;
+
+      // ต้องมีรูปภาพตอนเพิ่ม
+      const file = req.file as Express.Multer.File | undefined;
+      if (!file) {
+        return res.status(400).json({ message: "กรุณาอัปโหลดภาพสไลด์" });
+      }
+
+      const slide_img = `/uploads/slide_images/${file.filename}`;
+
+      // กันชื่อซ้ำแบบตรงตัว (ถ้าไม่ต้องการกันซ้ำ ลบบล็อกนี้ได้)
+      const dup = await prisma.slide.findFirst({
+        where: { slide_name },
+      });
+      if (dup) {
+        // ลบไฟล์ใหม่ทิ้งเพราะไม่ใช้แล้ว
+        const p = path.join(SLIDE_UPLOADS_DIR, file.filename);
+        try {
+          if (fs.existsSync(p)) fs.unlinkSync(p);
+        } catch {}
+        return res
+          .status(409)
+          .json({ message: "ชื่อนี้มีอยู่แล้ว กรุณาใช้ชื่ออื่น" });
+      }
+
+      const created = await prisma.slide.create({
+        data: {
+          slide_name,
+          slide_img,
+          slide_status,
+        },
+      });
+
+      return res
+        .status(201)
+        .json({ message: "เพิ่มสไลด์สำเร็จ", slide: created });
+    } catch (error: any) {
+      // ถ้าผิดพลาดให้ลบไฟล์ที่อัปโหลดไว้เพื่อไม่ให้ค้างในเครื่อง
+      if (req.file) {
+        const p = path.join(SLIDE_UPLOADS_DIR, req.file.filename);
+        try {
+          if (fs.existsSync(p)) fs.unlinkSync(p);
+        } catch {}
+      }
+      console.error("Error adding slide:", error);
+      return res
+        .status(500)
+        .json({ message: "ไม่สามารถเพิ่มสไลด์ได้", error: error.message });
+    }
+  },
+
+  update_slide: async (req: Request, res: Response) => {
+    const idRaw =
+      (req.params.id as string) ??
+      (req.body?.slide_id as string) ??
+      (req.body?.id as string);
+    const slide_id = parseInt(idRaw, 10);
+
+    if (!slide_id || Number.isNaN(slide_id)) {
+      // ลบไฟล์ใหม่ (ถ้ามี) ทิ้งเพราะ id ไม่ถูกต้อง
+      if (req.file) {
+        const newFilePath = path.join(SLIDE_UPLOADS_DIR, req.file.filename);
+        try {
+          if (fs.existsSync(newFilePath)) fs.unlinkSync(newFilePath);
+        } catch {}
+      }
+      return res.status(400).json({ message: "รหัสสไลด์ไม่ถูกต้อง" });
+    }
+
+    try {
+      const existing = await prisma.slide.findUnique({ where: { slide_id } });
+      if (!existing) {
+        if (req.file) {
+          const newFilePath = path.join(SLIDE_UPLOADS_DIR, req.file.filename);
+          try {
+            if (fs.existsSync(newFilePath)) fs.unlinkSync(newFilePath);
+          } catch {}
+        }
+        return res.status(404).json({ message: "ไม่พบสไลด์" });
+      }
+
+      const nextName = (
+        (req.body.name ?? req.body.slide_name ?? existing.slide_name) as string
+      ).trim();
+
+      // แปลงสถานะ (ถ้าไม่ส่งมา ใช้ค่าเดิม)
+      const rawStatus =
+        req.body.status ?? req.body.slide_status ?? existing.slide_status;
+      const nextStatus =
+        String(rawStatus).toLowerCase() === "true"
+          ? 1
+          : String(rawStatus).toLowerCase() === "false"
+          ? 0
+          : Number(rawStatus)
+          ? 1
+          : 0;
+
+      let newImgPath: string | undefined;
+      if (req.file) {
+        newImgPath = `/uploads/slide_images/${req.file.filename}`;
+      }
+
+      const updated = await prisma.slide.update({
+        where: { slide_id },
+        data: {
+          slide_name: nextName,
+          slide_status: nextStatus,
+          ...(newImgPath ? { slide_img: newImgPath } : {}),
+        },
+      });
+
+      // ถ้ามีไฟล์ใหม่ ให้ลบไฟล์เก่า
+      if (req.file && existing.slide_img) {
+        const oldPath = path.join(
+          SLIDE_UPLOADS_DIR,
+          path.basename(existing.slide_img)
+        );
+        try {
+          if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+        } catch (err) {
+          console.error("Failed to delete old slide image:", err);
+          // ไม่ทำให้การอัปเดตล้มเหลว
+        }
+      }
+
+      return res
+        .status(200)
+        .json({ message: "อัปเดตสไลด์สำเร็จ", slide: updated });
+    } catch (error: any) {
+      // ลบไฟล์ใหม่ทิ้งหากอัปเดตล้มเหลว
+      if (req.file) {
+        const newFilePath = path.join(SLIDE_UPLOADS_DIR, req.file.filename);
+        try {
+          if (fs.existsSync(newFilePath)) fs.unlinkSync(newFilePath);
+        } catch {}
+      }
+      console.error("Error updating slide:", error);
+      return res
+        .status(500)
+        .json({ message: "ไม่สามารถอัปเดตสไลด์ได้", error: error.message });
+    }
+  },
+
+  delete_slide: async (req: Request, res: Response) => {
+    const idRaw =
+      (req.params.id as string) ??
+      (req.body?.slide_id as string) ??
+      (req.body?.id as string);
+    const slide_id = parseInt(idRaw, 10);
+
+    if (!slide_id || Number.isNaN(slide_id)) {
+      return res.status(400).json({ message: "รหัสสไลด์ไม่ถูกต้อง" });
+    }
+
+    try {
+      const slide = await prisma.slide.findUnique({ where: { slide_id } });
+      if (!slide) {
+        return res.status(404).json({ message: "ไม่พบสไลด์" });
+      }
+
+      await prisma.slide.delete({ where: { slide_id } });
+
+      // ลบไฟล์ภาพจริง
+      if (slide.slide_img) {
+        const imgPath = path.join(
+          SLIDE_UPLOADS_DIR,
+          path.basename(slide.slide_img)
+        );
+        try {
+          if (fs.existsSync(imgPath)) {
+            fs.unlinkSync(imgPath);
+            console.log(`ลบรูปสไลด์: ${imgPath}`);
+          }
+        } catch (err) {
+          console.error("ไม่สามารถลบไฟล์สไลด์:", err);
+          // ไม่ทำให้การลบสไลด์ล้มเหลว
+        }
+      }
+
+      return res.status(200).json({ message: "ลบสไลด์สำเร็จ" });
+    } catch (error: any) {
+      console.error("Error deleting slide:", error);
+      return res
+        .status(500)
+        .json({ message: "ไม่สามารถลบสไลด์ได้", error: error.message });
+    }
+  },
+  // ===== End Slides API =====
 };
