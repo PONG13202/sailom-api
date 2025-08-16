@@ -7,11 +7,13 @@ import dotenv from "dotenv";
 import axios from "axios";
 import path from "path";
 import fs from "fs";
-import { io } from '../index';
+import type { Server as SocketIOServer } from "socket.io";
+
 dotenv.config();
 
 const prisma = new PrismaClient();
 const secret = process.env.JWT_SECRET;
+const getIO = (req: Request) => req.app.get("io") as SocketIOServer | undefined;
 
 // Ensure JWT_SECRET is defined
 if (!secret) {
@@ -137,10 +139,11 @@ export const FrontController = {
           google_id: null, // การลงทะเบียนทั่วไป ไม่มี google_id
         },
       });
-      io.emit("new_user", {
+      getIO(req)?.emit("new_user", {
         user_id: newUser.user_id,
         user_email: newUser.user_email,
       });
+
       return res.status(200).json({
         message: "สมัครสมาชิกสำเร็จ",
         user: {
@@ -597,6 +600,26 @@ export const FrontController = {
       return res
         .status(500)
         .json({ available: false, message: "Server error" });
+    }
+  },
+  slides_show: async (req: Request, res: Response) => {
+    try {
+      const slides = await prisma.slide.findMany({
+        orderBy: { slide_id: "asc" },
+        select: {
+          slide_id: true,
+          slide_name: true,
+          slide_img: true,
+          slide_status: true,
+        },
+        where: { slide_status: 1 },
+      });
+      return res.status(200).json(slides);
+    } catch (error) {
+      console.error("Error fetching slides:", error);
+      return res
+        .status(500)
+        .json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลสไลด์" });
     }
   },
 };

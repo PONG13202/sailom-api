@@ -1,5 +1,5 @@
 // controllers/UserController.ts
-import { Request, Response } from "express";
+import e, { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 import jwt from "jsonwebtoken";
@@ -7,7 +7,8 @@ import dotenv from "dotenv";
 import axios from "axios";
 import path from "path";
 import fs from "fs";
-import { io } from "../index";
+import type { Server as SocketIOServer } from "socket.io";
+
 dotenv.config();
 
 const prisma = new PrismaClient();
@@ -16,6 +17,10 @@ const secret = process.env.JWT_SECRET;
 const UPLOADS_DIR = path.resolve("uploads/menu_images");
 // api\uploads\slide_images
 const SLIDE_UPLOADS_DIR = path.resolve("uploads/slide_images");
+const getIO = (req: Request) => req.app.get("io") as SocketIOServer | undefined;
+const emit = (req: Request, event: string, payload: any) => {
+  getIO(req)?.emit(event, payload);
+};
 
 const buildRoles = (
   isAdmin: boolean,
@@ -37,6 +42,7 @@ export const UserController = {
       if (!password || typeof password !== "string") {
         return res.status(400).json({ message: "กรุณากรอกรหัสผ่าน" });
       }
+      
 
       // ดึง claims ตรงๆจาก middleware (ห้ามไว้วางใจชื่อ field เดียว)
       const claims: any = (req as any).user || {};
@@ -231,7 +237,7 @@ export const UserController = {
           google_id: google_id || null,
         },
       });
-      req.app.get("io").emit("new_user", {
+      getIO(req)?.emit("new_user", {
         user_id: newUser.user_id,
         user_email: newUser.user_email,
       });
@@ -678,7 +684,8 @@ export const UserController = {
         user_email,
         user_phone,
       } = req.body;
-      // ตรวจสอบฟิลด์ที่จำเป็น
+
+      // validate
       if (!user_name || !user_pass || !user_email) {
         return res.status(400).json({
           message: "กรุณากรอกข้อมูลที่จำเป็น: user_name, user_pass, user_email",
@@ -689,15 +696,26 @@ export const UserController = {
           .status(400)
           .json({ message: "รหัสผ่านต้องมีความยาวมากกว่า 6 ตัวอักษร" });
       }
-      // เช็ค username ซ้ำเพื่อความปลอดภัย
-      const existingUser = await prisma.user.findUnique({
-        where: { user_name },
+
+      // กันซ้ำทั้ง username และ email
+      const dup = await prisma.user.findFirst({
+        where: {
+          OR: [{ user_name }, { user_email }],
+        },
+        select: { user_name: true, user_email: true },
       });
-      if (existingUser) {
-        return res.status(400).json({ message: "ชื่อผู้ใช้นี้ถูกใช้ไปแล้ว" });
+      if (dup) {
+        if (dup.user_name === user_name) {
+          return res.status(400).json({ message: "ชื่อผู้ใช้นี้ถูกใช้ไปแล้ว" });
+        }
+        if (dup.user_email === user_email) {
+          return res.status(400).json({ message: "อีเมลนี้ถูกใช้ไปแล้ว" });
+        }
       }
+
       const hashedPass = await bcrypt.hash(user_pass, 10);
-      const newUser = await prisma.user.create({
+
+      const created = await prisma.user.create({
         data: {
           user_name,
           user_pass: hashedPass,
@@ -707,25 +725,42 @@ export const UserController = {
           user_phone,
           user_img: req.file
             ? `uploads/user_images/${req.file.filename}`
-            : null, // ใช้ relative path สำหรับ frontend ดึงรูป
+            : null,
+          // ถ้ามี default ใน schema อยู่แล้ว จะไม่ต้องส่ง user_status ก็ได้
         },
       });
+
+      // ส่งเฉพาะฟิลด์ปลอดภัยกลับไป + emit มาตรฐาน
+      const safeUser = {
+        user_id: created.user_id,
+        user_name: created.user_name,
+        user_fname: created.user_fname,
+        user_lname: created.user_lname,
+        user_email: created.user_email,
+        user_phone: created.user_phone,
+        user_img: created.user_img,
+        user_status: created.user_status,
+      };
+
+      emit(req, "user:created", safeUser);
+
       return res.status(200).json({
         message: "สร้างผู้ใช้สำเร็จ",
-        data: newUser,
+        data: safeUser,
       });
     } catch (error) {
-      console.error(error); // Log error ใน server
+      console.error(error);
       return res.status(500).json({
-        message: "เกิดข้อผิดพลาดในระบบ: " + (error as Error).message, // แสดงเฉพาะ message เพื่อความปลอดภัย
+        message: "เกิดข้อผิดพลาดในระบบ: " + (error as Error).message,
       });
     }
   },
+
   update_user: async (req: Request, res: Response) => {
     try {
       const { user_id } = req.params;
       if (!user_id) return res.status(400).json({ message: "ไม่พบ user_id" });
-      // ใช้ optional chaining เพื่อป้องกัน req.body undefined
+
       const body = req.body || {};
       const user_name = body.user_name;
       const user_pass = body.user_pass;
@@ -733,6 +768,7 @@ export const UserController = {
       const user_lname = body.user_lname;
       const user_email = body.user_email;
       const user_phone = body.user_phone;
+
       // ดึงข้อมูลผู้ใช้เดิม
       const oldUser = await prisma.user.findUnique({
         where: { user_id: Number(user_id) },
@@ -741,7 +777,8 @@ export const UserController = {
       if (!oldUser) {
         return res.status(404).json({ message: "ไม่พบผู้ใช้" });
       }
-      // จัดการรหัสผ่าน (ใช้ค่าใหม่ถ้ามี, มิฉะนั้นใช้เดิม)
+
+      // จัดการรหัสผ่าน (ใช้ค่าใหม่ถ้ามี)
       let hashedPass = oldUser.user_pass;
       if (user_pass && user_pass.trim() !== "") {
         if (user_pass.length < 6) {
@@ -751,27 +788,38 @@ export const UserController = {
         }
         hashedPass = await bcrypt.hash(user_pass, 10);
       }
-      // จัดการรูปภาพ (ใช้รูปใหม่ถ้ามี, มิฉะนั้นใช้เดิม)
+
+      // จัดการรูปภาพ (ใช้รูปใหม่ถ้ามี)
       let user_img = oldUser.user_img;
       if (req.file) {
-        // ถ้ามีรูปใหม่, ลบรูปเก่าถ้ามี
         if (oldUser.user_img) {
           const oldImagePath = path.resolve(
             "uploads/user_images",
             path.basename(oldUser.user_img)
-          ); // สร้าง absolute path อย่างปลอดภัย
+          );
           try {
-            if (fs.existsSync(oldImagePath)) {
-              fs.unlinkSync(oldImagePath); // ลบไฟล์เก่า
-              console.log(`ลบรูปเก่า: ${oldImagePath}`);
-            }
-          } catch (deleteError) {
-            console.error(`ไม่สามารถลบรูปเก่า: ${deleteError}`); // Log error แต่ไม่ทำให้ update ล้มเหลว
+            if (fs.existsSync(oldImagePath)) fs.unlinkSync(oldImagePath);
+          } catch (e) {
+            console.error("ไม่สามารถลบรูปเก่า:", e);
           }
         }
-        // ตั้งค่ารูปใหม่
         user_img = `uploads/user_images/${req.file.filename}`;
       }
+      if (user_name) {
+        const nameTaken = await prisma.user.findFirst({
+          where: { user_name, NOT: { user_id: Number(user_id) } },
+        });
+        if (nameTaken)
+          return res.status(400).json({ message: "ชื่อผู้ใช้นี้ถูกใช้ไปแล้ว" });
+      }
+      if (user_email) {
+        const emailTaken = await prisma.user.findFirst({
+          where: { user_email, NOT: { user_id: Number(user_id) } },
+        });
+        if (emailTaken)
+          return res.status(400).json({ message: "อีเมลนี้ถูกใช้ไปแล้ว" });
+      }
+
       const updatedUser = await prisma.user.update({
         where: { user_id: Number(user_id) },
         data: {
@@ -784,7 +832,25 @@ export const UserController = {
           user_img,
         },
       });
-      return res.status(200).json(updatedUser);
+
+      // shape ข้อมูลปลอดภัย + emit
+      const safeUser = {
+        user_id: updatedUser.user_id,
+        user_name: updatedUser.user_name,
+        user_fname: updatedUser.user_fname,
+        user_lname: updatedUser.user_lname,
+        user_email: updatedUser.user_email,
+        user_phone: updatedUser.user_phone,
+        user_img: updatedUser.user_img,
+        user_status: updatedUser.user_status,
+      };
+
+      emit(req, "user:updated", safeUser);
+
+      return res.status(200).json({
+        message: "อัปเดตผู้ใช้สำเร็จ",
+        data: safeUser,
+      });
     } catch (error) {
       console.error(error);
       return res
@@ -792,6 +858,7 @@ export const UserController = {
         .json({ message: "เกิดข้อผิดพลาดในระบบ: " + (error as Error).message });
     }
   },
+
   update_user_status: async (req: Request, res: Response) => {
     const actor = (req as any).user;
     const targetId = Number(req.params.userId);
@@ -822,6 +889,12 @@ export const UserController = {
       where: { user_id: targetId },
       data: { user_status: Number(status) },
     });
+
+    emit(req, "user:status_updated", {
+      user_id: targetId,
+      user_status: Number(status),
+    });
+
     return res.status(200).json({ message: "อัปเดตสถานะสำเร็จ" });
   },
 
@@ -859,17 +932,18 @@ export const UserController = {
         where: { user_id: targetId },
       }));
       const keepAdmin = nextRoles.includes("admin");
-      if (hadAdmin && !keepAdmin)
+      if (hadAdmin && !keepAdmin) {
         return res
           .status(403)
           .json({ message: "ไม่สามารถถอดสิทธิ์ผู้ดูแลของตนเองได้" });
+      }
     }
 
     await prisma.$transaction(async (tx) => {
       // admin
       if (nextRoles.includes("admin")) {
         await tx.admin.upsert({
-          where: { user_id: targetId }, // ต้องมี unique index ที่ user_id ในตาราง admin
+          where: { user_id: targetId },
           update: {},
           create: { user_id: targetId, admin_status: 1 },
         });
@@ -879,7 +953,7 @@ export const UserController = {
       // staff
       if (nextRoles.includes("staff")) {
         await tx.staff.upsert({
-          where: { user_id: targetId }, // ต้องมี unique index ที่ user_id ในตาราง staff
+          where: { user_id: targetId },
           update: {},
           create: { user_id: targetId, staff_status: 1 },
         });
@@ -887,6 +961,8 @@ export const UserController = {
         await tx.staff.deleteMany({ where: { user_id: targetId } });
       }
     });
+
+    emit(req, "user:roles_updated", { user_id: targetId, roles: nextRoles });
 
     return res
       .status(200)
@@ -898,6 +974,10 @@ export const UserController = {
       const { user_id } = req.params; // คนที่ถูกลบ
       const { password } = req.body;
       const loggedInUser = (req as any).user; // คนที่ลบ (จาก JWT)
+      if (Number(loggedInUser.id) === Number(user_id)) {
+        return res.status(403).json({ message: "ห้ามลบบัญชีของตนเอง" });
+      }
+
       if (!loggedInUser?.id) {
         return res
           .status(400)
@@ -908,19 +988,21 @@ export const UserController = {
           .status(400)
           .json({ message: "กรุณากรอกรหัสผ่านเพื่อยืนยัน" });
       }
+
       const deleter = await prisma.user.findUnique({
         where: { user_id: Number(loggedInUser.id) },
         select: { user_pass: true },
       });
-      if (!deleter || !deleter.user_pass) {
-        return res
-          .status(404)
-          .json({ message: "ไม่พบผู้ใช้ หรือไม่มีรหัสผ่าน" });
-      }
-      const isMatch = await bcrypt.compare(password, deleter.user_pass);
-      if (!isMatch) {
+      if (
+        !deleter?.user_pass ||
+        !(await bcrypt.compare(password, deleter.user_pass))
+      ) {
         return res.status(401).json({ message: "รหัสผ่านไม่ถูกต้อง" });
       }
+      await prisma.$transaction([
+        prisma.admin.deleteMany({ where: { user_id: Number(user_id) } }),
+        prisma.staff.deleteMany({ where: { user_id: Number(user_id) } }),
+      ]);
       // ดึงข้อมูลผู้ใช้ที่ถูกลบเพื่อเช็ครูปภาพ
       const userToDelete = await prisma.user.findUnique({
         where: { user_id: Number(user_id) },
@@ -929,35 +1011,50 @@ export const UserController = {
       if (!userToDelete) {
         return res.status(404).json({ message: "ไม่พบผู้ใช้ที่ต้องการลบ" });
       }
+
       // ลบรูปภาพถ้ามี
       if (userToDelete.user_img) {
         const imagePath = path.resolve(
           "uploads/user_images",
           path.basename(userToDelete.user_img)
-        ); // สร้าง absolute path อย่างปลอดภัย
+        );
         try {
-          if (fs.existsSync(imagePath)) {
-            fs.unlinkSync(imagePath); // ลบไฟล์
-            console.log(`ลบรูปโปรไฟล์: ${imagePath}`);
-          }
-        } catch (deleteError) {
-          console.error(`ไม่สามารถลบรูปโปรไฟล์: ${deleteError}`); // Log error แต่ไม่ทำให้การลบผู้ใช้ล้มเหลว
+          if (fs.existsSync(imagePath)) fs.unlinkSync(imagePath);
+        } catch (e) {
+          console.error("ไม่สามารถลบรูปโปรไฟล์:", e);
         }
       }
-      // ลบผู้ใช้จากฐานข้อมูล
-      const deletedUser = await prisma.user.delete({
+
+      // ลบผู้ใช้จากฐานข้อมูล (เลือกเฉพาะฟิลด์ปลอดภัยเพื่อส่งกลับ)
+      const deleted = await prisma.user.delete({
         where: { user_id: Number(user_id) },
+        select: { user_id: true, user_name: true, user_email: true },
       });
-      return res.status(200).json(deletedUser);
+
+      emit(req, "user:deleted", { user_id: deleted.user_id });
+
+      return res.status(200).json({ message: "ลบผู้ใช้สำเร็จ", deleted });
     } catch (error) {
       console.error("Delete user error:", error);
       return res.status(500).json({
         message: "เกิดข้อผิดพลาดในระบบ",
         error: (error as Error).message,
-      }); // ปรับให้แสดงเฉพาะ message เพื่อความปลอดภัย
+      });
     }
   },
 
+  seats: async (req: Request, res: Response) => {
+    try {
+      const seatOptions = await prisma.seatOption.findMany();
+      return res.status(200).json(seatOptions);
+    } catch (error) {
+      console.error("Error fetching seat options:", error);
+      return res.status(500).json({
+        success: false,
+        message: "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์",
+      });
+    }
+  },
   add_seat: async (req: Request, res: Response) => {
     const { seats } = req.body;
 
@@ -975,6 +1072,7 @@ export const UserController = {
         },
       });
 
+      emit(req, "seat:created", newSeat);
       return res.status(200).json({
         success: true,
         data: newSeat,
@@ -988,18 +1086,6 @@ export const UserController = {
       });
     }
   },
-  seats: async (req: Request, res: Response) => {
-    try {
-      const seatOptions = await prisma.seatOption.findMany();
-      return res.status(200).json(seatOptions);
-    } catch (error) {
-      console.error("Error fetching seat options:", error);
-      return res.status(500).json({
-        success: false,
-        message: "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์",
-      });
-    }
-  },
   delete_seat: async (req: Request, res: Response) => {
     const { id } = req.params;
 
@@ -1007,32 +1093,10 @@ export const UserController = {
       await prisma.seatOption.delete({
         where: { id: parseInt(id) },
       });
+      emit(req, "seat:deleted", { id: parseInt(id) });
       res.status(200).json({ message: "ลบสำเร็จ" });
     } catch (err) {
       res.status(500).json({ error: "ไม่สามารถลบได้" });
-    }
-  },
-  add_TableType: async (req: Request, res: Response) => {
-    const { name } = req.body;
-
-    try {
-      const newTable = await prisma.tableType.create({
-        data: {
-          name: name,
-        },
-      });
-
-      return res.status(200).json({
-        success: true,
-        data: newTable,
-        message: "เพิ่มโต๊ะเรียบร้อยแล้ว",
-      });
-    } catch (error) {
-      console.error("Error creating table:", error);
-      return res.status(500).json({
-        success: false,
-        message: "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์",
-      });
     }
   },
   table_Types: async (req: Request, res: Response) => {
@@ -1047,15 +1111,75 @@ export const UserController = {
       });
     }
   },
+  add_TableType: async (req: Request, res: Response) => {
+    const { name } = req.body;
+
+    try {
+      const newTable = await prisma.tableType.create({
+        data: {
+          name: name,
+        },
+      });
+
+      emit(req, "tableType:created", newTable);
+      return res.status(200).json({
+        success: true,
+        data: newTable,
+        message: "เพิ่มโต๊ะเรียบร้อยแล้ว",
+      });
+    } catch (error) {
+      console.error("Error creating table:", error);
+      return res.status(500).json({
+        success: false,
+        message: "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์",
+      });
+    }
+  },
   delete_TablType: async (req: Request, res: Response) => {
     const { id } = req.params;
     try {
       await prisma.tableType.delete({
         where: { id: parseInt(id) },
       });
+      emit(req, "tableType:deleted", { id: parseInt(id) });
       res.status(200).json({ message: "ลบสำเร็จ" });
     } catch (err) {
       res.status(500).json({ error: "ไม่สามารถลบได้" });
+    }
+  },
+  // API: ดึงข้อมูลโต๊ะทั้งหมด
+  tables: async (req: Request, res: Response) => {
+    try {
+      const tables = await prisma.tableMap.findMany({
+        include: {
+          seatOption: true, // ดึงข้อมูล seatOption ที่เกี่ยวข้อง
+          tableType: true, // ดึงข้อมูล tableType ที่เกี่ยวข้อง
+        },
+        orderBy: {
+          id: "asc", // เรียงตาม ID เพื่อความสอดคล้อง
+        },
+      });
+
+      // ปรับโครงสร้างข้อมูลให้ตรงกับที่ frontend คาดหวัง
+      const formattedTables = tables.map((table) => ({
+        id: String(table.id), // แปลง id เป็น string ตาม frontend
+        name: table.label,
+        seats: table.seatOption?.seats || 0, // ใช้ seats จาก seatOption
+        tableTypeId: String(table.tableType?.id || ""), // แปลง tableTypeId เป็น string
+        tableTypeName: table.tableType?.name || "ไม่ระบุประเภท", // แปลง tableTypeId เป็น string
+        additionalInfo: table.additionalInfo || "",
+        x: table.x,
+        y: table.y,
+        active: table.active,
+      }));
+
+      return res.status(200).json(formattedTables);
+    } catch (error: any) {
+      console.error("Error fetching tables:", error);
+      return res.status(500).json({
+        message: "เกิดข้อผิดพลาดในการดึงข้อมูลโต๊ะ",
+        error: error.message,
+      });
     }
   },
   add_table: async (req: Request, res: Response) => {
@@ -1132,6 +1256,7 @@ export const UserController = {
         },
       });
 
+      emit(req, "table:created", newTable);
       return res
         .status(201)
         .json({ message: "เพิ่มโต๊ะอาหารสำเร็จ", table: newTable });
@@ -1140,42 +1265,6 @@ export const UserController = {
       console.error("Error adding table:", error);
       return res.status(500).json({
         message: "เกิดข้อผิดพลาดในการเพิ่มโต๊ะอาหาร",
-        error: error.message,
-      });
-    }
-  },
-
-  // API: ดึงข้อมูลโต๊ะทั้งหมด
-  tables: async (req: Request, res: Response) => {
-    try {
-      const tables = await prisma.tableMap.findMany({
-        include: {
-          seatOption: true, // ดึงข้อมูล seatOption ที่เกี่ยวข้อง
-          tableType: true, // ดึงข้อมูล tableType ที่เกี่ยวข้อง
-        },
-        orderBy: {
-          id: "asc", // เรียงตาม ID เพื่อความสอดคล้อง
-        },
-      });
-
-      // ปรับโครงสร้างข้อมูลให้ตรงกับที่ frontend คาดหวัง
-      const formattedTables = tables.map((table) => ({
-        id: String(table.id), // แปลง id เป็น string ตาม frontend
-        name: table.label,
-        seats: table.seatOption?.seats || 0, // ใช้ seats จาก seatOption
-        tableTypeId: String(table.tableType?.id || ""), // แปลง tableTypeId เป็น string
-        tableTypeName: table.tableType?.name || "ไม่ระบุประเภท", // แปลง tableTypeId เป็น string
-        additionalInfo: table.additionalInfo || "",
-        x: table.x,
-        y: table.y,
-        active: table.active,
-      }));
-
-      return res.status(200).json(formattedTables);
-    } catch (error: any) {
-      console.error("Error fetching tables:", error);
-      return res.status(500).json({
-        message: "เกิดข้อผิดพลาดในการดึงข้อมูลโต๊ะ",
         error: error.message,
       });
     }
@@ -1235,20 +1324,21 @@ export const UserController = {
           tableType: true,
         },
       });
+      const shaped = {
+        id: String(updatedTable.id),
+        name: updatedTable.label,
+        seats: updatedTable.seatOption?.seats || 0,
+        tableTypeId: String(updatedTable.tableTypeId),
+        additionalInfo: updatedTable.additionalInfo || "",
+        x: updatedTable.x,
+        y: updatedTable.y,
+        active: updatedTable.active,
+      };
 
-      return res.status(200).json({
-        message: "Table updated successfully",
-        table: {
-          id: String(updatedTable.id),
-          name: updatedTable.label,
-          seats: updatedTable.seatOption?.seats || 0,
-          tableTypeId: String(updatedTable.tableTypeId),
-          additionalInfo: updatedTable.additionalInfo || "",
-          x: updatedTable.x,
-          y: updatedTable.y,
-          active: updatedTable.active,
-        },
-      });
+      emit(req, "table:updated", shaped);
+      return res
+        .status(200)
+        .json({ message: "Table updated successfully", table: shaped });
     } catch (error: any) {
       console.error("Error updating table:", error);
       if (error.code === "P2025") {
@@ -1293,6 +1383,7 @@ export const UserController = {
 
       await prisma.$transaction(updates); // ใช้ transaction เพื่อให้มั่นใจว่าทุกการอัปเดตสำเร็จพร้อมกัน
 
+      emit(req, "table:positions_saved", { positions: tablePositions });
       return res
         .status(200)
         .json({ message: "Table positions updated successfully" });
@@ -1322,6 +1413,10 @@ export const UserController = {
         data: { active: active },
       });
 
+      emit(req, "table:status_updated", {
+        id: updatedTable.id,
+        active: updatedTable.active,
+      });
       return res.status(200).json({
         message: "Table status updated successfully",
         table: updatedTable,
@@ -1352,6 +1447,7 @@ export const UserController = {
         where: { id: parseInt(id as string, 10) },
       });
 
+      emit(req, "table:deleted", { id: parseInt(id as string, 10) });
       return res.status(200).json({ message: "Table deleted successfully" });
     } catch (error: any) {
       console.error("Error deleting table:", error);
@@ -1384,6 +1480,7 @@ export const UserController = {
           name: name,
         },
       });
+      emit(req, "foodType:created", newFoodType);
       return res.status(200).json(newFoodType);
     } catch (error: any) {
       console.error("Error creating type food:", error);
@@ -1400,6 +1497,7 @@ export const UserController = {
         where: { id: parseInt(id) },
         data: { name },
       });
+      emit(req, "foodType:updated", updated);
       return res.status(200).json(updated);
     } catch (error: any) {
       console.error("Error updating food type:", error);
@@ -1409,14 +1507,13 @@ export const UserController = {
       });
     }
   },
-
-  // ลบข้อมูล
   delete_FoodType: async (req: Request, res: Response) => {
     const { id } = req.params;
     try {
       const deleted = await prisma.typefood.delete({
         where: { id: parseInt(id) },
       });
+      emit(req, "foodType:deleted", { id: parseInt(id) });
       return res.status(200).json({ message: "Deleted", deleted });
     } catch (error: any) {
       console.error("Error deleting food type:", error);
@@ -1521,6 +1618,7 @@ export const UserController = {
           },
         },
       });
+      emit(req, "menu:created", newMenu);
       return res.status(200).json(newMenu);
     } catch (error: any) {
       console.error("Error creating menu:", error);
@@ -1726,6 +1824,7 @@ export const UserController = {
         });
       }
 
+      emit(req, "menu:updated", { menu_id: menuId });
       res
         .status(200)
         .json({ message: "Menu updated successfully.", menu: updatedMenu });
@@ -1793,6 +1892,7 @@ export const UserController = {
         });
       }
 
+      emit(req, "menu:deleted", { menu_id: menuId });
       return res.status(200).json({
         message: "ลบเมนูและรูปภาพที่เกี่ยวข้องสำเร็จ",
         deleted: deletedMenu,
@@ -1805,6 +1905,7 @@ export const UserController = {
       });
     }
   },
+
   grid_size: async (req: Request, res: Response) => {
     try {
       const gridSize = await prisma.gridSize.findUnique({
@@ -1948,6 +2049,7 @@ export const UserController = {
         },
       });
 
+      emit(req, "slide:created", created);
       return res
         .status(201)
         .json({ message: "เพิ่มสไลด์สำเร็จ", slide: created });
@@ -2039,7 +2141,7 @@ export const UserController = {
           // ไม่ทำให้การอัปเดตล้มเหลว
         }
       }
-
+      emit(req, "slide:updated", updated);
       return res
         .status(200)
         .json({ message: "อัปเดตสไลด์สำเร็จ", slide: updated });
@@ -2094,6 +2196,7 @@ export const UserController = {
         }
       }
 
+      emit(req, "slide:deleted", { slide_id });
       return res.status(200).json({ message: "ลบสไลด์สำเร็จ" });
     } catch (error: any) {
       console.error("Error deleting slide:", error);
