@@ -190,6 +190,15 @@ app.post(
     }
   }
 );
+app.get("/user_info", authenticateToken, async (req: Request, res: Response) => {
+  try {
+    await FrontController.user_info(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
+
+
 
 // grid size
 app.get("/grid_size", async (req: Request, res: Response) => {

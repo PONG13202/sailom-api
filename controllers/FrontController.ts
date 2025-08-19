@@ -536,7 +536,7 @@ export const FrontController = {
       if (!user) {
         return res.status(404).json({ message: "ไม่พบผู้ใช้" });
       }
-
+      
       return res.status(200).json({
         message: "ข้อมูลผู้ใช้",
         user: user,
