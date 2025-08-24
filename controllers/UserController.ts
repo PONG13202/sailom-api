@@ -21,6 +21,15 @@ const getIO = (req: Request) => req.app.get("io") as SocketIOServer | undefined;
 const emit = (req: Request, event: string, payload: any) => {
   getIO(req)?.emit(event, payload);
 };
+function dayRange(dateStr?: string) {
+  // ถ้า FE ไม่ส่งมา ให้ใช้ "วันนี้" ของไทย
+  // ปลอดภัยสุดคือให้ FE ส่ง YYYY-MM-DD มาเสมอ
+  const tz = "+07:00";
+  const d = dateStr ?? new Date().toISOString().slice(0, 10); // YYYY-MM-DD (ของ UTC)
+  const start = new Date(`${d}T00:00:00${tz}`);
+  const end = new Date(`${d}T24:00:00${tz}`);
+  return { start, end };
+}
 
 const buildRoles = (
   isAdmin: boolean,
@@ -42,7 +51,6 @@ export const UserController = {
       if (!password || typeof password !== "string") {
         return res.status(400).json({ message: "กรุณากรอกรหัสผ่าน" });
       }
-      
 
       // ดึง claims ตรงๆจาก middleware (ห้ามไว้วางใจชื่อ field เดียว)
       const claims: any = (req as any).user || {};
@@ -1045,7 +1053,9 @@ export const UserController = {
 
   seats: async (req: Request, res: Response) => {
     try {
-      const seatOptions = await prisma.seatOption.findMany();
+      const seatOptions = await prisma.seatOption.findMany({
+        orderBy: [{ seats: "asc" }],
+      });
       return res.status(200).json(seatOptions);
     } catch (error) {
       console.error("Error fetching seat options:", error);
@@ -1150,109 +1160,134 @@ export const UserController = {
   // API: ดึงข้อมูลโต๊ะทั้งหมด
   tables: async (req: Request, res: Response) => {
     try {
+      const gridId = Number(req.query.gridId ?? 1);
+
       const tables = await prisma.tableMap.findMany({
-        include: {
-          seatOption: true, // ดึงข้อมูล seatOption ที่เกี่ยวข้อง
-          tableType: true, // ดึงข้อมูล tableType ที่เกี่ยวข้อง
-        },
-        orderBy: {
-          id: "asc", // เรียงตาม ID เพื่อความสอดคล้อง
-        },
+        where: { gridId }, // ★ filter ตามกริด
+        include: { seatOption: true, tableType: true },
+        orderBy: { id: "asc" },
       });
 
-      // ปรับโครงสร้างข้อมูลให้ตรงกับที่ frontend คาดหวัง
-      const formattedTables = tables.map((table) => ({
-        id: String(table.id), // แปลง id เป็น string ตาม frontend
+      const formatted = tables.map((table) => ({
+        id: String(table.id),
         name: table.label,
-        seats: table.seatOption?.seats || 0, // ใช้ seats จาก seatOption
-        tableTypeId: String(table.tableType?.id || ""), // แปลง tableTypeId เป็น string
-        tableTypeName: table.tableType?.name || "ไม่ระบุประเภท", // แปลง tableTypeId เป็น string
-        additionalInfo: table.additionalInfo || "",
+        seats: table.seatOption?.seats ?? 0,
+        tableTypeId: String(table.tableType?.id ?? ""),
+        tableTypeName: table.tableType?.name ?? "ไม่ระบุประเภท",
+        additionalInfo: table.additionalInfo ?? "",
         x: table.x,
         y: table.y,
         active: table.active,
+        // (ถ้าจะส่งกลับด้วยก็ได้)
+        gridId: table.gridId,
       }));
 
-      return res.status(200).json(formattedTables);
+      return res.status(200).json(formatted);
     } catch (error: any) {
       console.error("Error fetching tables:", error);
-      return res.status(500).json({
-        message: "เกิดข้อผิดพลาดในการดึงข้อมูลโต๊ะ",
-        error: error.message,
-      });
+      return res
+        .status(500)
+        .json({
+          message: "เกิดข้อผิดพลาดในการดึงข้อมูลโต๊ะ",
+          error: error.message,
+        });
     }
   },
+
   add_table: async (req: Request, res: Response) => {
     try {
-      const { name, seats, tableTypeId, additionalInfo } = req.body;
+      const { name, seats, tableTypeId, additionalInfo, gridId } = req.body;
+      const xBody = Number.isFinite(+req.body?.x)
+        ? parseInt(req.body.x, 10)
+        : NaN;
+      const yBody = Number.isFinite(+req.body?.y)
+        ? parseInt(req.body.y, 10)
+        : NaN;
+      const gid = Number(gridId ?? 1);
 
-      // 1. ตรวจสอบข้อมูลเบื้องต้น
       if (!name || !seats || !tableTypeId) {
-        return res.status(400).json({
-          message: "ชื่อโต๊ะ, จำนวนที่นั่ง, และประเภทโต๊ะเป็นข้อมูลที่จำเป็น",
-        });
+        return res
+          .status(400)
+          .json({
+            message: "ชื่อโต๊ะ, จำนวนที่นั่ง, และประเภทโต๊ะเป็นข้อมูลที่จำเป็น",
+          });
       }
 
-      // 2. ค้นหา seatOptionId จากจำนวน seats ที่ส่งมา
       const seatOption = await prisma.seatOption.findFirst({
-        where: {
-          seats: parseInt(seats, 10), // แปลงเป็น Int เนื่องจาก frontend ส่งเป็น string
-        },
+        where: { seats: parseInt(seats, 10) },
       });
+      if (!seatOption)
+        return res
+          .status(404)
+          .json({
+            message: `ไม่พบตัวเลือกจำนวนที่นั่งสำหรับ ${seats} ที่นั่ง`,
+          });
 
-      if (!seatOption) {
-        return res.status(404).json({
-          message: `ไม่พบตัวเลือกจำนวนที่นั่งสำหรับ ${seats} ที่นั่ง`,
-        });
-      }
-
-      // 3. แปลง tableTypeId เป็น Int
-      const parsedTableTypeId = parseInt(tableTypeId, 10);
-
-      // 4. ตรวจสอบว่า tableType มีอยู่จริงหรือไม่
-      const existingTableType = await prisma.tableType.findUnique({
-        where: {
-          id: parsedTableTypeId,
-        },
+      const parsedTypeId = parseInt(tableTypeId, 10);
+      const type = await prisma.tableType.findUnique({
+        where: { id: parsedTypeId },
       });
-
-      if (!existingTableType) {
+      if (!type)
         return res
           .status(404)
           .json({ message: `ไม่พบประเภทโต๊ะที่มี ID: ${tableTypeId}` });
-      }
 
-      // 5. ตรวจสอบว่ามีชื่อโต๊ะซ้ำกันหรือไม่
-      const existingTable = await prisma.tableMap.findUnique({
-        where: {
-          label: name.trim(),
-        },
+      // ✅ ชื่อซ้ำใน "กริดเดียวกัน" เท่านั้น
+      const dup = await prisma.tableMap.findUnique({
+        where: { gridId_label: { gridId: gid, label: name.trim() } },
       });
-
-      if (existingTable) {
+      if (dup)
         return res
           .status(409)
-          .json({ message: `ชื่อโต๊ะ '${name.trim()}' มีอยู่ในระบบแล้ว` });
+          .json({ message: `ชื่อโต๊ะ '${name.trim()}' มีอยู่ในกริดนี้แล้ว` });
+
+      // ✅ ตรวจกริด
+      const grid = await prisma.gridSize.findUnique({ where: { id: gid } });
+      if (!grid) return res.status(404).json({ message: "ไม่พบกริด" });
+
+      let x = Number.isFinite(xBody) ? xBody : 0;
+      let y = Number.isFinite(yBody) ? yBody : 0;
+
+      const inBounds = (xx: number, yy: number) =>
+        xx >= 0 && yy >= 0 && xx < grid.cols && yy < grid.rows;
+      if (!inBounds(x, y))
+        return res.status(400).json({ message: "พิกัดอยู่นอกกริด" });
+
+      // ✅ กันซ้ำตำแหน่งด้วยคีย์ผสม
+      const taken = await prisma.tableMap.findUnique({
+        where: { gridId_x_y: { gridId: gid, x, y } },
+      });
+      if (taken) {
+        // หา cell ว่าง
+        const cells = await prisma.tableMap.findMany({
+          where: { gridId: gid },
+          select: { x: true, y: true },
+        });
+        const used = new Set(cells.map((c) => `${c.x},${c.y}`));
+        let found: { x: number; y: number } | null = null;
+        outer: for (let yy = 0; yy < grid.rows; yy++) {
+          for (let xx = 0; xx < grid.cols; xx++) {
+            if (!used.has(`${xx},${yy}`)) {
+              found = { x: xx, y: yy };
+              break outer;
+            }
+          }
+        }
+        if (!found) return res.status(409).json({ message: "พื้นที่กริดเต็ม" });
+        x = found.x;
+        y = found.y;
       }
 
-      // 6. สร้างโต๊ะใหม่ในฐานข้อมูล
       const newTable = await prisma.tableMap.create({
         data: {
           label: name.trim(),
-          seatOption: {
-            connect: {
-              id: seatOption.id, // เชื่อม seatOption โดยใช้ ID
-            },
-          },
-          tableType: {
-            connect: {
-              id: parsedTableTypeId, // เชื่อม tableType โดยใช้ ID
-            },
-          },
-          additionalInfo: additionalInfo ? additionalInfo.trim() : null, // เพิ่ม additionalInfo
-          x: 0, // กำหนดค่าเริ่มต้น
-          y: 0, // กำหนดค่าเริ่มต้น
-          active: true, // กำหนดค่าเริ่มต้น
+          seatOption: { connect: { id: seatOption.id } },
+          tableType: { connect: { id: parsedTypeId } },
+          additionalInfo: additionalInfo?.trim() || null,
+          x,
+          y,
+          active: true,
+          grid: { connect: { id: gid } },
         },
       });
 
@@ -1261,14 +1296,23 @@ export const UserController = {
         .status(201)
         .json({ message: "เพิ่มโต๊ะอาหารสำเร็จ", table: newTable });
     } catch (error: any) {
-      // เพิ่ม : any เพื่อจัดการ error.message
+      // กันเคสชน unique ที่ create (เผื่อ race)
+      if (error?.code === "P2002") {
+        // unique constraint failed
+        return res
+          .status(409)
+          .json({ message: "ชื่อโต๊ะหรือพิกัดซ้ำในกริดนี้" });
+      }
       console.error("Error adding table:", error);
-      return res.status(500).json({
-        message: "เกิดข้อผิดพลาดในการเพิ่มโต๊ะอาหาร",
-        error: error.message,
-      });
+      return res
+        .status(500)
+        .json({
+          message: "เกิดข้อผิดพลาดในการเพิ่มโต๊ะอาหาร",
+          error: error.message,
+        });
     }
   },
+
   update_table: async (req: Request, res: Response) => {
     const { id } = req.params; // ดึง ID ของโต๊ะจาก URL parameter
     const { name, seats, tableTypeId, additionalInfo } = req.body; // ดึงข้อมูลที่ต้องการอัปเดตจาก request body
@@ -1526,6 +1570,7 @@ export const UserController = {
   menus: async (req: Request, res: Response) => {
     try {
       const menus = await prisma.foodMenu.findMany({
+        orderBy: { menu_id: "asc" },
         include: {
           MenuImages: true,
           Typefoods: {
@@ -1535,6 +1580,8 @@ export const UserController = {
           },
         },
       });
+      emit(req, "menu", menus);
+
       return res.status(200).json(menus);
     } catch (error: any) {
       console.error("Error fetching menus:", error);
@@ -1636,6 +1683,7 @@ export const UserController = {
           }
         });
       }
+      emit(req, "menu:created", null);
       return res
         .status(500)
         .json({ message: "Failed to create menu", error: error.message });
@@ -2206,4 +2254,250 @@ export const UserController = {
     }
   },
   // ===== End Slides API =====
+  // ===== Location & Contacts API =====
+  location: async (req: Request, res: Response) => {
+    try {
+      // มีได้แค่ 1 แถว: ถ้ายังไม่มี ให้สร้างแถวว่างไว้เลย
+      let row = await prisma.location.findFirst();
+      if (!row) {
+        row = await prisma.location.create({
+          data: {
+            location_name: "",
+            location_link: "",
+            location_map: "",
+          },
+        });
+      }
+      return res.status(200).json(row);
+    } catch (error: any) {
+      console.error("Error fetching location:", error);
+      return res
+        .status(500)
+        .json({
+          message: "ไม่สามารถดึงข้อมูลสถานที่ได้",
+          error: error.message,
+        });
+    }
+  },
+
+  update_location: async (req: Request, res: Response) => {
+    const idRaw = req.params.id;
+    const location_id = parseInt(idRaw, 10);
+    if (!location_id || Number.isNaN(location_id)) {
+      return res.status(400).json({ message: "รหัสสถานที่ไม่ถูกต้อง" });
+    }
+
+    try {
+      const { location_name, location_link, location_map } = req.body ?? {};
+      if (!location_name || !String(location_name).trim()) {
+        return res.status(400).json({ message: "กรุณากรอกชื่อสถานที่" });
+      }
+
+      const existing = await prisma.location.findUnique({
+        where: { location_id },
+      });
+      if (!existing) {
+        return res.status(404).json({ message: "ไม่พบสถานที่" });
+      }
+
+      const updated = await prisma.location.update({
+        where: { location_id },
+        data: {
+          location_name: String(location_name).trim(),
+          // ใน schema เป็น String (non-null) ทั้งคู่ → ใส่เป็น "" ถ้า undefined
+          location_link: location_link ?? "",
+          location_map: location_map ?? "",
+        },
+      });
+
+      emit(req, "location:updated", updated);
+      return res.status(200).json(updated);
+    } catch (error: any) {
+      console.error("Error updating location:", error);
+      return res
+        .status(500)
+        .json({ message: "ไม่สามารถอัปเดตสถานที่ได้", error: error.message });
+    }
+  },
+
+  // --- Contacts API (schema ใหม่: contact_name, contact_link) ---
+  contacts: async (req: Request, res: Response) => {
+    try {
+      const items = await prisma.contact.findMany({
+        orderBy: { contact_id: "desc" },
+      });
+      return res.status(200).json(items);
+    } catch (error: any) {
+      console.error("Error fetching contacts:", error);
+      return res
+        .status(500)
+        .json({
+          message: "ไม่สามารถดึงข้อมูลการติดต่อได้",
+          error: error.message,
+        });
+    }
+  },
+
+  add_contact: async (req: Request, res: Response) => {
+    try {
+      const { contact_name, contact_link } = req.body ?? {};
+
+      if (!contact_name || !String(contact_name).trim()) {
+        return res.status(400).json({ message: "กรุณากรอกชื่อช่องทาง" });
+      }
+
+      const created = await prisma.contact.create({
+        data: {
+          contact_name: String(contact_name).trim(),
+          contact_link: contact_link ? String(contact_link).trim() : null,
+        },
+      });
+
+      emit(req, "contact:created", created);
+      return res.status(201).json(created);
+    } catch (error: any) {
+      console.error("Error creating contact:", error);
+      return res
+        .status(500)
+        .json({
+          message: "ไม่สามารถเพิ่มข้อมูลติดต่อได้",
+          error: error.message,
+        });
+    }
+  },
+
+  update_contact: async (req: Request, res: Response) => {
+    const idRaw = req.params.id;
+    const contact_id = parseInt(idRaw, 10);
+    if (!contact_id || Number.isNaN(contact_id)) {
+      return res.status(400).json({ message: "รหัสข้อมูลติดต่อไม่ถูกต้อง" });
+    }
+
+    try {
+      const { contact_name, contact_link } = req.body ?? {};
+
+      if (!contact_name || !String(contact_name).trim()) {
+        return res.status(400).json({ message: "กรุณากรอกชื่อช่องทาง" });
+      }
+
+      const existing = await prisma.contact.findUnique({
+        where: { contact_id },
+      });
+      if (!existing) {
+        return res.status(404).json({ message: "ไม่พบข้อมูลติดต่อ" });
+      }
+
+      const updated = await prisma.contact.update({
+        where: { contact_id },
+        data: {
+          contact_name: String(contact_name).trim(),
+          contact_link: contact_link ? String(contact_link).trim() : null,
+        },
+      });
+
+      emit(req, "contact:updated", updated);
+      return res.status(200).json(updated);
+    } catch (error: any) {
+      console.error("Error updating contact:", error);
+      return res
+        .status(500)
+        .json({
+          message: "ไม่สามารถอัปเดตข้อมูลติดต่อได้",
+          error: error.message,
+        });
+    }
+  },
+
+  delete_contact: async (req: Request, res: Response) => {
+    const idRaw = req.params.id;
+    const contact_id = parseInt(idRaw, 10);
+    if (!contact_id || Number.isNaN(contact_id)) {
+      return res.status(400).json({ message: "รหัสข้อมูลติดต่อไม่ถูกต้อง" });
+    }
+
+    try {
+      await prisma.contact.delete({ where: { contact_id } });
+      emit(req, "contact:deleted", { contact_id });
+      return res.status(200).json({ message: "ลบข้อมูลติดต่อสำเร็จ" });
+    } catch (error: any) {
+      console.error("Error deleting contact:", error);
+      if (error?.code === "P2025") {
+        return res.status(404).json({ message: "ไม่พบข้อมูลติดต่อ" });
+      }
+      return res
+        .status(500)
+        .json({ message: "ไม่สามารถลบข้อมูลติดต่อได้", error: error.message });
+    }
+  },
+
+  reservation: async (req: Request, res: Response) => {
+    try {
+      const { date, tableId, includeCanceled } = req.query as any;
+      const { start, end } = dayRange(date);
+
+      const active = [
+        "PENDING_OTP",
+        "OTP_VERIFIED",
+        "AWAITING_PAYMENT",
+        "CONFIRMED",
+      ] as const;
+      const whereStatus =
+        includeCanceled === "1" ? { not: "EXPIRED" } : { in: active };
+
+      const where: any = {
+        status: whereStatus,
+        dateStart: { lt: end },
+        dateEnd: { gt: start },
+      };
+      if (tableId) where.tableId = Number(tableId);
+
+      const rows = await prisma.reservation.findMany({
+        where,
+        include: {
+          table: { select: { id: true, label: true } },
+          user: {
+            select: {
+              user_id: true,
+              user_fname: true,
+              user_lname: true,
+              user_phone: true,
+            },
+          },
+        },
+        orderBy: [{ tableId: "asc" }, { dateStart: "asc" }],
+      });
+
+      const data = rows.map((r) => ({
+        id: r.id,
+        tableId: r.tableId,
+        tableLabel: r.table?.label ?? "-",
+        start: r.dateStart,
+        end: r.dateEnd,
+        people: r.people,
+        status: r.status,
+        user: {
+          id: r.userId,
+          name:
+            [r.user?.user_fname, r.user?.user_lname]
+              .filter(Boolean)
+              .join(" ") || String(r.userId),
+          phone: r.user?.user_phone ?? null,
+        },
+      }));
+
+      emit?.(req, "reservation:day", { date, data }); // ชื่ออีเวนต์จะตั้งอะไรก็ได้
+      return res.json({
+        date: date ?? new Date().toISOString().slice(0, 10),
+        start,
+        end,
+        data,
+      });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ message: "listByDay error" });
+    }
+  },
+  // --- End Contacts API ---
+
+  // ===== End Location & Contacts API =====
 };

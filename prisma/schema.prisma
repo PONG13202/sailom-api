@@ -15,18 +15,21 @@ datasource db {
 }
 
 model User {
-  user_id     Int     @id @default(autoincrement())
-  user_name   String? @unique
-  user_pass   String? // nullable for Google login
-  user_fname  String?
-  user_lname  String?
-  user_email  String  @unique
-  user_phone  String?
-  user_img    String?
-  user_status Int     @default(1)
-  google_id   String? @unique
-  admin       Admin[]
-  staff       Staff[]
+  user_id      Int           @id @default(autoincrement())
+  user_name    String?       @unique
+  user_pass    String? // nullable for Google login
+  user_fname   String?
+  user_lname   String?
+  user_email   String        @unique
+  user_phone   String?
+  user_img     String?
+  user_status  Int           @default(1)
+  google_id    String?       @unique
+  admin        Admin[]
+  staff        Staff[]
+  reservations Reservation[]
+  payments     Payment[]
+  orders       Order[]
 }
 
 model Admin {
@@ -45,17 +48,27 @@ model Staff {
 
 model TableMap {
   id             Int         @id @default(autoincrement())
-  label          String      @unique
-  x              Float       @default(0) // 0..1
-  y              Float       @default(0) // 0..1
+  label          String 
+  x              Int         @default(0) // เก็บเป็นตัวเลขช่องก็ได้ (int) หรือสัดส่วน 0..1 ก็ได้
+  y              Int         @default(0)
   active         Boolean     @default(true)
   seatOptionId   Int?
   seatOption     SeatOption? @relation(fields: [seatOptionId], references: [id])
   tableTypeId    Int?
   tableType      TableType?  @relation(fields: [tableTypeId], references: [id])
   additionalInfo String?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+
+  // ★ เพิ่ม: ผูกโต๊ะกับกริด (เริ่มต้นให้ชี้ไป id=1 เพื่อไม่พังของเดิม)
+  gridId Int      @default(1)
+  grid   GridSize @relation(fields: [gridId], references: [id], onDelete: Cascade)
+
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  reservations Reservation[]
+
+  @@unique([gridId, label]) // <- ชื่อซ้ำได้ข้ามกริด แต่ห้ามซ้ำในกริดเดียวกัน
+  @@unique([gridId, x, y]) // <- กันโต๊ะชนกันใน cell เดียวกัน (กริดเดียวกัน)
+  @@index([gridId])
 }
 
 model SeatOption {
@@ -94,6 +107,9 @@ model FoodMenuType {
   typefoodId     Int
   foodMenu       FoodMenu @relation(fields: [foodMenuId], references: [menu_id], onDelete: Cascade)
   typefood       Typefood @relation(fields: [typefoodId], references: [id], onDelete: Cascade)
+
+  @@unique([foodMenuId, typefoodId])
+  @@index([typefoodId])
 }
 
 model MenuImage {
@@ -102,20 +118,168 @@ model MenuImage {
   menu_image    String
   menu_status   Int      @default(0)
   foodMenu      FoodMenu @relation(fields: [menu_id], references: [menu_id], onDelete: Cascade)
+
+  @@unique([menu_id, menu_image])
+  @@index([menu_id, menu_status])
 }
 
 model GridSize {
-  id        Int      @id @default(1) // Fixed ID to ensure a single record
-  rows      Int      @default(10) // Number of rows (default 10)
-  cols      Int      @default(10) // Number of columns (default 10)
-  updatedAt DateTime @updatedAt
+  id        Int        @id @default(1) // Fixed ID to ensure a single record
+  rows      Int        @default(10) // Number of rows (default 10)
+  cols      Int        @default(10) // Number of columns (default 10)
+  updatedAt DateTime   @updatedAt
+  tables    TableMap[]
 }
 
-model Slide{
-  slide_id Int @id @default(autoincrement())
-  slide_name String
-  slide_img String
-  slide_status Int @default(1)
+model Slide {
+  slide_id     Int      @id @default(autoincrement())
+  slide_name   String
+  slide_img    String
+  slide_status Int      @default(1)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Location {
+  location_id   Int    @id @default(autoincrement())
+  location_name String
+  location_link String
+  location_map  String
+}
+
+model Contact {
+  contact_id   Int     @id @default(autoincrement())
+  contact_name String
+  contact_link String?
+}
+
+// ===== Booking/Payment enums =====
+enum ReservationStatus {
+  PENDING_OTP // เพิ่งสร้าง กำลังรอยืนยันรหัสอีเมล
+  OTP_VERIFIED // OTP ผ่านแล้ว
+  AWAITING_PAYMENT // ออก QR แล้ว กำลังรอชำระ
+  CONFIRMED // แอดมินตรวจสลิป/รับชำระแล้ว
+  EXPIRED // เลยเวลา QR/OTP หรือถูกระบบหมดอายุ
+  CANCELED // ผู้ใช้/แอดมินยกเลิก
+}
+
+enum PaymentStatus {
+  PENDING // ออก QR แล้ว ยังไม่อัปสลิป
+  SUBMITTED // ลูกค้าอัปสลิปแล้ว (รอตรวจ)
+  PAID // ยืนยันชำระแล้ว
+  EXPIRED // เลยเวลา QR
+  CANCELED
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  CANCELED
+}
+
+enum PaymentMethod {
+  PROMPTPAY
+}
+
+model Reservation {
+  id        Int               @id @default(autoincrement())
+  userId    Int
+  tableId   Int? // จะ fix โต๊ะให้เลยหรือค่อย assign ภายหลังได้
+  dateStart DateTime // เวลาเริ่มจอง
+  dateEnd   DateTime // เวลาเลิก (ใช้คำนวณชนกัน)
+  people    Int
+  status    ReservationStatus @default(PENDING_OTP)
+
+  // มัดจำ: กรณี "จองอย่างเดียว" = 100, แต่ถ้าจองพร้อมสั่งอาหาร = 0
+  depositAmount Int @default(0)
+
+  // ความสัมพันธ์กับการชำระเงินและคำสั่งอาหาร
+  paymentId        Int?      @unique
+  paymentExpiresAt DateTime? // อายุ QR (เช่น +5 นาที)
+  slipImage        String? // เก็บ path สลิปล่าสุด
+  orderId          Int?      @unique
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  user    User      @relation(fields: [userId], references: [user_id], onDelete: Cascade)
+  table   TableMap? @relation(fields: [tableId], references: [id], onDelete: SetNull)
+  payment Payment?  @relation(fields: [paymentId], references: [id])
+  order   Order?    @relation(fields: [orderId], references: [id])
+  OtpCode OtpCode?
+
+  @@index([userId, status])
+  @@index([tableId, dateStart, dateEnd])
+}
+
+model OtpCode {
+  id            Int      @id @default(autoincrement())
+  reservationId Int      @unique
+  targetEmail   String
+  codeHash      String // เก็บ hash ของ OTP เท่านั้น
+  expiresAt     DateTime
+  attempts      Int      @default(5)
+  createdAt     DateTime @default(now())
+
+  reservation Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+}
+
+model Payment {
+  id          Int           @id @default(autoincrement())
+  userId      Int
+  method      PaymentMethod @default(PROMPTPAY)
+  amount      Int // บาท
+  status      PaymentStatus @default(PENDING)
+  qrPayload   String? // payload สำหรับสร้าง QR
+  qrDataUrl   String? // data:image/png;base64,... (ให้ FE แสดงได้เลย)
+  expiresAt   DateTime
+  slipImage   String?
+  confirmedAt DateTime?
+
+  // ผูกกับงานไหน (อาจเป็น reservation หรือ order)
+  reservation Reservation? // one-to-one ผ่าน Reservation.paymentId
+  order       Order? // one-to-one ผ่าน Order.paymentId
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [user_id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([expiresAt])
+}
+
+model Order {
+  id     Int         @id @default(autoincrement())
+  userId Int
+  total  Int // รวมเงินอาหาร (บาท)
+  status OrderStatus @default(PENDING)
+
+  // ความสัมพันธ์
+  reservation Reservation?
+  paymentId   Int?         @unique
+  payment     Payment?     @relation(fields: [paymentId], references: [id])
+
+  items OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [user_id], onDelete: Cascade)
+}
+
+model OrderItem {
+  id      Int    @id @default(autoincrement())
+  orderId Int
+  menuId  Int
+  name    String
+  price   Int
+  qty     Int
+  note    String? @db.VarChar(160)
+  options Json? 
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
 }

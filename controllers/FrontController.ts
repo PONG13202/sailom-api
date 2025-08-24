@@ -8,6 +8,8 @@ import axios from "axios";
 import path from "path";
 import fs from "fs";
 import type { Server as SocketIOServer } from "socket.io";
+import { get } from "http";
+import { emit } from "process";
 
 dotenv.config();
 
@@ -536,7 +538,7 @@ export const FrontController = {
       if (!user) {
         return res.status(404).json({ message: "ไม่พบผู้ใช้" });
       }
-      
+
       return res.status(200).json({
         message: "ข้อมูลผู้ใช้",
         user: user,
@@ -622,4 +624,138 @@ export const FrontController = {
         .json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลสไลด์" });
     }
   },
+  seat: async (req: Request, res: Response) => {
+    try {
+      const seatOptions = await prisma.seatOption.findMany({
+        orderBy: [{ seats: "asc" }],
+      });
+      getIO(req)?.emit("seat:list", seatOptions);
+      return res.status(200).json(seatOptions);
+    } catch (error) {
+      console.error("Error fetching seat options:", error);
+      return res.status(500).json({
+        success: false,
+        message: "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์",
+      });
+    }
+  },
+    locations: async (req: Request, res: Response) => {
+      try {
+        // มีได้แค่ 1 แถว: ถ้ายังไม่มี ให้สร้างแถวว่างไว้เลย
+        let row = await prisma.location.findFirst();
+        if (!row) {
+          row = await prisma.location.create({
+            data: {
+              location_name: "",
+              location_link: "",
+              location_map: "",
+            },
+          });
+        }
+        getIO(req)?.emit("location", row);
+        return res.status(200).json(row);
+      } catch (error: any) {
+        console.error("Error fetching location:", error);
+        return res
+          .status(500)
+          .json({ message: "ไม่สามารถดึงข้อมูลสถานที่ได้", error: error.message });
+      }
+    },
+  grid: async (req: Request, res: Response) => {
+    try {
+      const gridSize = await prisma.gridSize.findUnique({
+        where: { id: 1 },
+      });
+
+      if (!gridSize) {
+        const defaultGridSize = await prisma.gridSize.create({
+          data: {
+            id: 1,
+            rows: 10,
+            cols: 10,
+          },
+        });
+        return res.status(200).json(defaultGridSize);
+      }
+getIO(req)?.emit("gridSize", gridSize);
+      return res.status(200).json(gridSize);
+    } catch (error: any) {
+      console.error("Error fetching grid size:", error);
+      return res.status(500).json({
+        message: "Failed to fetch grid size",
+        error: error.message,
+      });
+    }
+  },
+  table: async (req: Request, res: Response) => {
+  try {
+    const gridId = Number(req.query.gridId ?? 1);
+
+    const tables = await prisma.tableMap.findMany({
+      where: { gridId },                       // ★ filter ตามกริด
+      include: { seatOption: true, tableType: true },
+      orderBy: { id: "asc" },
+    });
+
+    const formatted = tables.map((table) => ({
+      id: String(table.id),
+      name: table.label,
+      seats: table.seatOption?.seats ?? 0,
+      tableTypeId: String(table.tableType?.id ?? ""),
+      tableTypeName: table.tableType?.name ?? "ไม่ระบุประเภท",
+      additionalInfo: table.additionalInfo ?? "",
+      x: table.x,
+      y: table.y,
+      active: table.active,
+      // (ถ้าจะส่งกลับด้วยก็ได้)
+      gridId: table.gridId,
+    }));
+    getIO(req)?.emit("table:list", formatted);
+    return res.status(200).json(formatted);
+  } catch (error: any) {
+    console.error("Error fetching tables:", error);
+    return res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลโต๊ะ", error: error.message });
+  }
+},
+  menu: async (req: Request, res: Response) => {
+    try {
+      const menus = await prisma.foodMenu.findMany({
+        orderBy: { menu_name: "asc" },
+        include: {
+          MenuImages: true,
+          Typefoods: {
+            include: {
+              typefood: true,
+            },
+          },
+        },
+        
+      }
+    );
+      getIO(req)?.emit("menu", menus);
+      return res.status(200).json(menus);
+    } catch (error: any) {
+      console.error("Error fetching menus:", error);
+      return res
+        .status(500)
+        .json({ message: "Failed to fetch menus", error: error.message });
+    }
+  },
+    foodType: async (req: Request, res: Response) => {
+      try {
+        const foodTypes = await prisma.typefood.findMany(
+          {
+            orderBy: { name: "asc" },
+          }
+        );
+        getIO(req)?.emit("foodType", foodTypes);
+        return res.status(200).json(foodTypes);
+      } catch (error: any) {
+        console.error("Error fetching food types:", error);
+        return res
+          .status(500)
+          .json({ message: "Failed to fetch food types", error: error.message });
+      }
+    },
+
 };

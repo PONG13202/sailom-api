@@ -10,13 +10,16 @@ import path from "path";
 import fs from "fs";
 import http from "http";
 import { Server } from "socket.io";
+import { ReservationController } from "./controllers/Reservation";
+import { PaymentController } from "./controllers/Payment";
+import type { RequestHandler } from "express";
+
 
 dotenv.config();
 
 const app = express();
 const port = 5000;
 
-// CORS (รองรับหลายพอร์ตและส่งคุกกี้/credential ได้)
 app.use(
   cors({
     origin: ["http://localhost:3000", "http://localhost:3001"],
@@ -28,7 +31,6 @@ app.use(
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// ให้แน่ใจว่าโฟลเดอร์อัปโหลดมีอยู่จริง
 [
   "uploads",
   "uploads/user_images",
@@ -39,10 +41,8 @@ app.use(express.json());
   if (!fs.existsSync(abs)) fs.mkdirSync(abs, { recursive: true });
 });
 
-// เสิร์ฟไฟล์จาก /uploads
 app.use("/uploads", express.static(path.resolve("uploads")));
 
-// สร้าง HTTP server + Socket.IO
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -52,10 +52,8 @@ const io = new Server(server, {
   },
 });
 
-// ให้ controllers เข้าถึง io ได้ผ่าน req.app.get("io")
 app.set("io", io);
 
-// ตัวอย่างการจัดการเชื่อมต่อ + join/leave room
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
 
@@ -63,11 +61,9 @@ io.on("connection", (socket) => {
   socket.on("leave", (room: string) => socket.leave(room));
 
   socket.on("disconnect", () => {
-    // console.log("Client disconnected:", socket.id);
   });
 });
 
-// ===================== Multer storages =====================
 // user images
 const userStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, "uploads/user_images"),
@@ -97,33 +93,102 @@ const slideStorage = multer.diskStorage({
   },
 });
 const uploadSlide = multer({ storage: slideStorage });
+// payment slip images
+const slipStorage = multer.diskStorage({
+  destination: (_req, _file, cb) =>
+    cb(null, process.env.UPLOAD_DIR || "uploads"), // อยู่ใต้ /uploads ก็พอ
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `slip-${Date.now()}-${Math.round(Math.random()*1e9)}${ext}`);
+  },
+});
+const uploadSlip = multer({ storage: slipStorage });
 
 // ===================== Auth middleware =====================
-const authenticateToken = (
-  req: Request,
-  res: Response,
-  next: NextFunction
-): void => {
+const authenticateToken: RequestHandler = (req, res, next) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
-
   if (!token) {
     res.status(401).json({ message: "ไม่ได้รับ token" });
-    return;
+    return; // ✅ จบด้วย void
   }
-
   jwt.verify(token, process.env.JWT_SECRET as string, (err, user) => {
     if (err) {
       res.status(403).json({ message: "token ไม่ถูกต้อง" });
-      return;
+      return; // ✅ จบด้วย void
     }
     (req as any).user = user;
     next();
   });
 };
 
+const requireAdmin: RequestHandler = (req, res, next) => {
+  if (!(req as any).user?.isAdmin) {
+    res.status(403).json({ message: "Only admin" });
+    return; // ✅ จบด้วย void (ไม่ return Response)
+  }
+  next();
+};
+
+// ====== Reservation (ผู้ใช้ต้องล็อกอิน) ======
+app.post("/reservations", authenticateToken, async (req, res) => {
+  try { await ReservationController.create(req, res); }
+  catch { res.status(500).json({ message: "Internal Server Error" }); }
+});
+
+// ขอ OTP (ส่งอีเมล)
+app.post("/reservations/:id/request-otp", authenticateToken, async (req, res) => {
+  try { await ReservationController.requestOtp(req, res); }
+  catch { res.status(500).json({ message: "Internal Server Error" }); }
+});
+
+// ตรวจ OTP → ถ้าต้องจ่ายจะออก QR
+app.post("/reservations/:id/verify-otp", authenticateToken, async (req, res) => {
+  try { await ReservationController.verifyOtp(req, res); }
+  catch { res.status(500).json({ message: "Internal Server Error" }); }
+});
+
+// (ของคุณมี /reservation GET สำหรับตารางรายวันแล้ว อยู่ด้านบน)
+
+// ====== Payment ======
+app.get("/payment/:id", authenticateToken, async (req, res) => {
+  try { await PaymentController.get(req, res); }
+  catch { res.status(500).json({ message: "Internal Server Error" }); }
+});
+
+// อัปโหลดสลิป (multipart/form-data; field = "slip")
+app.post("/payment/:id/slip",
+  authenticateToken,
+  uploadSlip.single("slip"),
+  async (req, res) => {
+    try { await PaymentController.uploadSlip(req, res); }
+    catch { res.status(500).json({ message: "Internal Server Error" }); }
+  }
+);
+
+// แอดมินกดยืนยันสลิป
+app.post("/payment/:id/confirm",
+  authenticateToken,requireAdmin,async (req, res) => {
+    try { await PaymentController.confirm(req, res); }
+    catch { res.status(500).json({ message: "Internal Server Error" }); }
+  }
+);
+
+
+
+
+
+
+
 // ===================== Routes =====================
 // password verify
+app.get("/reservation",authenticateToken, async (req: Request, res: Response) => {
+  try {
+    await UserController.reservation(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
 app.post(
   "/verify_password",
   authenticateToken,
@@ -535,6 +600,48 @@ app.delete("/delete_slide/:id", async (req: Request, res: Response) => {
     res.status(500).json({ message: "Internal Server Error" });
   }
 });
+app.get("/location", async (req: Request, res: Response) => {
+  try {
+    await UserController.location(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+app.put("/update_location/:id", async (req: Request, res: Response) => {
+  try {
+    await UserController.update_location(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
+app.get("/contacts", async (req: Request, res: Response) => {
+  try {
+    await UserController.contacts(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+app.post("/add_contact", async (req: Request, res: Response) => {
+  try {
+    await UserController.add_contact(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
+app.put("/update_contact/:id", async (req: Request, res: Response) => {
+  try {
+    await UserController.update_contact(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
+app.delete("/delete_contact/:id", async (req: Request, res: Response) => {
+  try {
+    await UserController.delete_contact(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
 
 // slides_show (หน้าบ้าน แสดงเฉพาะ slide_status = 1)
 app.get("/slides_show", async (req: Request, res: Response) => {
@@ -544,6 +651,48 @@ app.get("/slides_show", async (req: Request, res: Response) => {
     res.status(500).json({ message: "Internal Server Error" });
   }
 });
+app.get("/seat",async (req: Request, res: Response) => {
+  try {
+    await FrontController.seat(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
+app.get("/locations", async (req: Request, res: Response) => {
+  try {
+    await FrontController.locations(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+app.get("/table", async (req: Request, res: Response) => {
+  try {
+    await FrontController.table(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
+app.get("/grid", async (req: Request, res: Response) => {
+  try {
+    await FrontController.grid(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
+app.get("/menu", async (req: Request, res: Response) => {
+  try {
+    await FrontController.menu(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
+app.get("/foodType", async (req: Request, res: Response) => {
+  try {
+    await FrontController.foodType(req, res);
+  } catch {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+})
 
 // (ทางเลือก) health check
 app.get("/health", (_req: Request, res: Response) => {
