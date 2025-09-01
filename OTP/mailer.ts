@@ -22,26 +22,28 @@ export async function getTransport(): Promise<Transporter> {
   });
 }
 
-export async function sendOtpEmail(to: string, code: string): Promise<{
-  messageId: string;
-  previewUrl: string | null;
-}> {
+export async function sendOtpEmail(to: string, code: string) {
   const from = process.env.OTP_EMAIL_FROM || "SaiLom <no-reply@example.com>";
   const transporter = await getTransport();
 
+  // ✅ ชั่วคราวสำหรับดีบัก
+  try {
+    await transporter.verify();
+    console.log("[SMTP] verified ok");
+  } catch (e) {
+    console.error("[SMTP] verify failed:", (e as any)?.message || e);
+  }
+
   const info = await transporter.sendMail({
-    from,
-    to,
+    from, to,
     subject: "รหัสยืนยันการจอง (OTP)",
     text: `OTP: ${code} (อายุ 5 นาที)`,
     html: `<p>รหัส OTP: <b>${code}</b> (อายุ 5 นาที)</p>`,
   });
 
-  // ถ้าเป็น Ethereal จะมีลิงก์ preview
   const preview =
     (nodemailer.getTestMessageUrl &&
-      (nodemailer.getTestMessageUrl(info as SentMessageInfo) || null)) ||
-    null;
+      (nodemailer.getTestMessageUrl(info as SentMessageInfo) || null)) || null;
 
   return { messageId: info.messageId as string, previewUrl: preview };
 }

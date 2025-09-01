@@ -13,64 +13,123 @@ export const PaymentController = {
     return res.json(row);
   },
 
-  uploadSlip: async (req: Request, res: Response) => {
-    try {
-      const id = Number(req.params.id);
-      if (!req.file) return res.status(400).json({ message: "no file" });
+uploadSlip: async (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ message: "id required" });
+    if (!req.file) return res.status(400).json({ message: "slip file required" });
 
-      const filePath = `/${process.env.UPLOAD_DIR || "uploads"}/${
-        req.file.filename
-      }`;
-      const absUrl = `${process.env.PUBLIC_BASE_URL || ""}${filePath}`;
+    const exists = await prisma.payment.findUnique({ where: { id } });
+    if (!exists) return res.status(404).json({ message: "payment not found" });
 
-      const p = await prisma.payment.update({
-        where: { id },
-        data: { slipImage: absUrl, status: "SUBMITTED" },
-      });
-      getIO(req)?.emit("payment:submitted", {
-        id: p.id,
-        status: p.status,
-        slipImage: p.slipImage,
-      });
-      return res.json({ ok: true, payment: p });
-    } catch (e: any) {
-      console.error(e);
-      return res
-        .status(500)
-        .json({ message: "upload slip error", error: e.message });
-    }
+    // เก็บเป็น path ใต้ /uploads เพื่อให้ front ใช้ได้ตรงๆ
+    const slipPath = `/uploads/slips_images/${req.file.filename}`;
+
+    // ถ้าเดิม EXPIRED หรือ PENDING -> คืน/ตั้งเป็น SUBMITTED
+    const nextStatus =
+      exists.status === "EXPIRED" || exists.status === "PENDING"
+        ? "SUBMITTED"
+        : exists.status;
+
+    const updated = await prisma.payment.update({
+      where: { id },
+      data: { slipImage: slipPath, status: nextStatus },
+    });
+
+    const io = req.app.get("io");
+    io.emit("payment:updated", { id, status: updated.status });
+
+    return res.json({ ok: true, id, slipImage: updated.slipImage, status: updated.status });
   },
 
-  confirm: async (req: Request, res: Response) => {
-    try {
-      const id = Number(req.params.id);
-      const p = await prisma.payment.update({
-        where: { id },
-        data: { status: "PAID", confirmedAt: new Date() },
-      });
 
-      const r = await prisma.reservation.findFirst({
-        where: { paymentId: id },
-      });
-      if (r)
-        await prisma.reservation.update({
-          where: { id: r.id },
-          data: { status: "CONFIRMED" },
-        });
 
-      const o = await prisma.order.findFirst({ where: { paymentId: id } });
-      if (o)
-        await prisma.order.update({
-          where: { id: o.id },
-          data: { status: "CONFIRMED" },
-        });
-      getIO(req)?.emit("payment:confirmed", { id: p.id, status: p.status });
-      return res.json({ ok: true, payment: p });
-    } catch (e: any) {
-      console.error(e);
-      return res
-        .status(500)
-        .json({ message: "confirm payment error", error: e.message });
+confirm: async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "id required" });
+
+  const pay = await prisma.payment.findUnique({
+    where: { id },
+    include: { order: true },
+  });
+  if (!pay) return res.status(404).json({ message: "not found" });
+
+  // ✅ อนุญาตยืนยันแม้ EXPIRED ถ้ามีสลิปแล้ว
+  if (pay.status === "EXPIRED" && !pay.slipImage) {
+    return res.status(400).json({ message: "QR expired and no slip uploaded" });
+  }
+
+  const now = new Date();
+
+  const result = await prisma.$transaction(async (tx) => {
+    // 1) ปรับสถานะการจ่ายเงินเป็น PAID
+    const updatedPay = await tx.payment.update({
+      where: { id },
+      data: { status: "PAID", confirmedAt: now },
+    });
+
+    // 2) ถ้ามี order → คอนเฟิร์มบิล
+    if (pay.order && pay.order.status !== "CONFIRMED") {
+      await tx.order.update({
+        where: { id: pay.order.id },
+        data: { status: "CONFIRMED" },
+      });
     }
+
+    // 3) หาใบจองที่ผูกกับ payment นี้ แล้วคอนเฟิร์ม (แม้เดิมจะ EXPIRED)
+    const resv = await tx.reservation.findFirst({ where: { paymentId: id } });
+    let confirmedResv: typeof resv | null = null;
+    if (resv && resv.status !== "CONFIRMED") {
+      confirmedResv = await tx.reservation.update({
+        where: { id: resv.id },
+        data: { status: "CONFIRMED" },
+      });
+    }
+
+    return { updatedPay, confirmedResv, orderId: pay.order?.id ?? null };
+  });
+
+  const io = req.app.get("io");
+  io.emit("payment:confirmed", { id, status: "PAID" });
+  io.emit("payment:updated", { id, status: "PAID" });
+
+  if (result.orderId) {
+    io.emit("order:updated", { id: result.orderId });
+  }
+  if (result.confirmedResv) {
+    io.emit("reservation:confirmed", {
+      id: result.confirmedResv.id,
+      tableId: result.confirmedResv.tableId,
+      start: result.confirmedResv.dateStart,
+      end: result.confirmedResv.dateEnd,
+    });
+    io.emit("reservation:updated", { id: result.confirmedResv.id });
+  }
+
+  return res.json({
+    ok: true,
+    id,
+    status: "PAID",
+    confirmedAt: now.toISOString(),
+  });
+},
+
+
+  cancel: async (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ message: "id required" });
+
+    const exists = await prisma.payment.findUnique({ where: { id } });
+    if (!exists) return res.status(404).json({ message: "not found" });
+
+    const updated = await prisma.payment.update({
+      where: { id },
+      data: { status: "CANCELED" },
+    });
+
+    const io = req.app.get("io");
+    io.emit("payment:updated", { id, status: "CANCELED" });
+
+    return res.json({ ok: true, id, status: "CANCELED" });
   },
+
 };

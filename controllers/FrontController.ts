@@ -16,6 +16,16 @@ dotenv.config();
 const prisma = new PrismaClient();
 const secret = process.env.JWT_SECRET;
 const getIO = (req: Request) => req.app.get("io") as SocketIOServer | undefined;
+const buildRoles = (
+  isAdmin: boolean,
+  isStaff: boolean
+): ("admin" | "staff" | "user")[] => {
+  const roles: ("admin" | "staff" | "user")[] = [];
+  if (isAdmin) roles.push("admin");
+  if (isStaff) roles.push("staff");
+  if (!isAdmin && !isStaff) roles.push("user");
+  return roles;
+};
 
 // Ensure JWT_SECRET is defined
 if (!secret) {
@@ -512,42 +522,43 @@ export const FrontController = {
   // 5. ฟังก์ชันสำหรับดึงข้อมูลผู้ใช้ (ต้องมีการยืนยัน token)
   user_info: async (req: Request, res: Response) => {
     try {
-      const userData = (req as any).user; // ข้อมูลผู้ใช้จาก authenticateToken middleware
-      const id = userData?.id;
+      const userData = (req as any).user;
+      const id = Number(userData?.id);
 
-      if (!id) {
+      if (!id)
         return res.status(401).json({ message: "ไม่พบ userId จาก token" });
-      }
 
       const user = await prisma.user.findUnique({
         where: { user_id: id },
         select: {
-          // เลือกเฉพาะฟิลด์ที่ต้องการส่งกลับ
           user_id: true,
-          user_name: true,
           user_fname: true,
           user_lname: true,
           user_email: true,
           user_phone: true,
           user_img: true,
           user_status: true,
-          google_id: true,
         },
       });
 
-      if (!user) {
-        return res.status(404).json({ message: "ไม่พบผู้ใช้" });
-      }
+      if (!user) return res.status(404).json({ message: "ไม่พบผู้ใช้ในระบบ" });
+
+      const [isAdmin, isStaff] = await Promise.all([
+        prisma.admin.findFirst({ where: { user_id: id } }).then(Boolean),
+        prisma.staff.findFirst({ where: { user_id: id } }).then(Boolean),
+      ]);
 
       return res.status(200).json({
-        message: "ข้อมูลผู้ใช้",
-        user: user,
+        ...user,
+        isAdmin,
+        isStaff,
+        roles: buildRoles(isAdmin, isStaff),
       });
-    } catch (error) {
-      console.error("Error fetching user info:", error);
+    } catch (error: any) {
+      console.error("เกิดข้อผิดพลาด:", error.message, error.stack);
       return res
         .status(500)
-        .json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลผู้ใช้" });
+        .json({ message: "เกิดข้อผิดพลาดในระบบ", error: error.message });
     }
   },
 
