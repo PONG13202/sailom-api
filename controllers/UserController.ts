@@ -1397,7 +1397,7 @@ export const UserController = {
   },
 
   // API: บันทึกตำแหน่งโต๊ะ (X, Y)
-  save_table_positions: async (req: Request, res: Response) => {
+ save_table_positions: async (req: Request, res: Response) => {
     try {
       const tablePositions: { id: string; x: number; y: number }[] = req.body; // <-- ตรงนี้คาดหวัง array
 
@@ -1426,8 +1426,7 @@ export const UserController = {
       });
 
       await prisma.$transaction(updates); // ใช้ transaction เพื่อให้มั่นใจว่าทุกการอัปเดตสำเร็จพร้อมกัน
-
-      emit(req, "table:positions_saved", { positions: tablePositions });
+      emit(req, "table:positions:updated", tablePositions);
       return res
         .status(200)
         .json({ message: "Table positions updated successfully" });
@@ -1439,6 +1438,7 @@ export const UserController = {
       });
     }
   },
+
 
   // API: อัปเดตสถานะ active ของโต๊ะ
   update_table_status: async (req: Request, res: Response) => {
@@ -2451,39 +2451,45 @@ export const UserController = {
       };
       if (tableId) where.tableId = Number(tableId);
 
-      const rows = await prisma.reservation.findMany({
-        where,
-        include: {
-          table: { select: { id: true, label: true } },
-          user: {
-            select: {
-              user_id: true,
-              user_fname: true,
-              user_lname: true,
-              user_phone: true,
-            },
-          },
-        },
-        orderBy: [{ tableId: "asc" }, { dateStart: "asc" }],
-      });
+const rows = await prisma.reservation.findMany({
+  where,
+  include: {
+    table: { select: { id: true, label: true } },
+    user:  { select: { user_id: true, user_fname: true, user_lname: true, user_phone: true } },
+    // ถ้าจำเป็น (ขึ้นกับ schema):
+    // order:   { select: { id: true } },
+    // payment: { select: { id: true } },
+  },
+  orderBy: [{ tableId: "asc" }, { dateStart: "asc" }],
+});
 
-      const data = rows.map((r) => ({
-        id: r.id,
-        tableId: r.tableId,
-        tableLabel: r.table?.label ?? "-",
-        start: r.dateStart,
-        end: r.dateEnd,
-        people: r.people,
-        status: r.status,
-        user: {
-          id: r.userId,
-          name:
-            [r.user?.user_fname, r.user?.user_lname]
-              .filter(Boolean)
-              .join(" ") || String(r.userId),
-          phone: r.user?.user_phone ?? null,
-        },
-      }));
+
+const data = rows.map((r) => ({
+  id: r.id,
+  tableId: r.tableId,
+  tableLabel: r.table?.label ?? "-",
+  start: r.dateStart?.toISOString(),                   // ✅ ส่งเป็น string
+  end: r.dateEnd ? r.dateEnd.toISOString() : null,     // ✅ ส่งเป็น string
+  people: r.people,
+  status: r.status,
+
+  // ✅ เพิ่มฟิลด์ที่ FE ใช้ทำ reservationOnly และ map order
+  orderId: (r as any).orderId ?? null,                 // ถ้า schema มี relation ให้ select มา หรือใช้ r.orderId ถ้ามี
+  paymentId: (r as any).paymentId ?? null,             // เช่นเดียวกัน
+  depositAmount: (r as any).depositAmount ?? 0,        // มัดจำ
+
+  user: {
+    id: r.userId,
+    name:
+      [r.user?.user_fname, r.user?.user_lname]
+        .filter(Boolean)
+        .join(" ")
+        .trim() || String(r.userId),
+    phone: r.user?.user_phone ?? null,
+  },
+}));
+
+
 
       emit?.(req, "reservation:day", { date, data }); // ชื่ออีเวนต์จะตั้งอะไรก็ได้
       return res.json({

@@ -1,19 +1,23 @@
-// C:\Users\pong1\OneDrive\เอกสาร\End-Pro\api\controllers\Payment.ts
+// api/controllers/Payment.ts
 import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
 import type { Server as SocketIOServer } from "socket.io";
-const getIO = (req: Request) => req.app.get("io") as SocketIOServer | undefined;
 
 const prisma = new PrismaClient();
+
 export const PaymentController = {
+  // ---------- GET ONE: GET /payment/:id ----------
   get: async (req: Request, res: Response) => {
     const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ message: "id required" });
+
     const row = await prisma.payment.findUnique({ where: { id } });
     if (!row) return res.status(404).json({ message: "payment not found" });
     return res.json(row);
   },
 
-uploadSlip: async (req: Request, res: Response) => {
+  // ---------- UPLOAD SLIP: POST /payment/:id/slip (multipart/form-data; field="slip") ----------
+  uploadSlip: async (req: Request, res: Response) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ message: "id required" });
     if (!req.file) return res.status(400).json({ message: "slip file required" });
@@ -21,10 +25,7 @@ uploadSlip: async (req: Request, res: Response) => {
     const exists = await prisma.payment.findUnique({ where: { id } });
     if (!exists) return res.status(404).json({ message: "payment not found" });
 
-    // เก็บเป็น path ใต้ /uploads เพื่อให้ front ใช้ได้ตรงๆ
     const slipPath = `/uploads/slips_images/${req.file.filename}`;
-
-    // ถ้าเดิม EXPIRED หรือ PENDING -> คืน/ตั้งเป็น SUBMITTED
     const nextStatus =
       exists.status === "EXPIRED" || exists.status === "PENDING"
         ? "SUBMITTED"
@@ -35,85 +36,77 @@ uploadSlip: async (req: Request, res: Response) => {
       data: { slipImage: slipPath, status: nextStatus },
     });
 
-    const io = req.app.get("io");
-    io.emit("payment:updated", { id, status: updated.status });
-
+    req.app.get("io")?.emit("payment:updated", { id, status: updated.status });
     return res.json({ ok: true, id, slipImage: updated.slipImage, status: updated.status });
   },
 
+  // ---------- CONFIRM: POST /payment/:id/confirm ----------
+  confirm: async (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ message: "id required" });
 
-
-confirm: async (req: Request, res: Response) => {
-  const id = Number(req.params.id);
-  if (!id) return res.status(400).json({ message: "id required" });
-
-  const pay = await prisma.payment.findUnique({
-    where: { id },
-    include: { order: true },
-  });
-  if (!pay) return res.status(404).json({ message: "not found" });
-
-  // ✅ อนุญาตยืนยันแม้ EXPIRED ถ้ามีสลิปแล้ว
-  if (pay.status === "EXPIRED" && !pay.slipImage) {
-    return res.status(400).json({ message: "QR expired and no slip uploaded" });
-  }
-
-  const now = new Date();
-
-  const result = await prisma.$transaction(async (tx) => {
-    // 1) ปรับสถานะการจ่ายเงินเป็น PAID
-    const updatedPay = await tx.payment.update({
+    const pay = await prisma.payment.findUnique({
       where: { id },
-      data: { status: "PAID", confirmedAt: now },
+      include: { order: true },
     });
+    if (!pay) return res.status(404).json({ message: "not found" });
 
-    // 2) ถ้ามี order → คอนเฟิร์มบิล
-    if (pay.order && pay.order.status !== "CONFIRMED") {
-      await tx.order.update({
-        where: { id: pay.order.id },
-        data: { status: "CONFIRMED" },
-      });
+    // allow confirm even EXPIRED if slip exists
+    if (pay.status === "EXPIRED" && !pay.slipImage) {
+      return res.status(400).json({ message: "QR expired and no slip uploaded" });
     }
 
-    // 3) หาใบจองที่ผูกกับ payment นี้ แล้วคอนเฟิร์ม (แม้เดิมจะ EXPIRED)
-    const resv = await tx.reservation.findFirst({ where: { paymentId: id } });
-    let confirmedResv: typeof resv | null = null;
-    if (resv && resv.status !== "CONFIRMED") {
-      confirmedResv = await tx.reservation.update({
-        where: { id: resv.id },
-        data: { status: "CONFIRMED" },
+    const now = new Date();
+
+    const result = await prisma.$transaction(async (tx) => {
+      const updatedPay = await tx.payment.update({
+        where: { id },
+        data: { status: "PAID", confirmedAt: now },
       });
+
+      if (pay.order && pay.order.status !== "CONFIRMED") {
+        await tx.order.update({
+          where: { id: pay.order.id },
+          data: { status: "CONFIRMED" },
+        });
+      }
+
+      const resv = await tx.reservation.findFirst({ where: { paymentId: id } });
+      let confirmedResv: typeof resv | null = null;
+      if (resv && resv.status !== "CONFIRMED") {
+        confirmedResv = await tx.reservation.update({
+          where: { id: resv.id },
+          data: { status: "CONFIRMED" },
+        });
+      }
+
+      return { updatedPay, confirmedResv, orderId: pay.order?.id ?? null };
+    });
+
+    const io = req.app.get("io") as SocketIOServer | undefined;
+    io?.emit("payment:confirmed", { id, status: "PAID" });
+    io?.emit("payment:updated", { id, status: "PAID" });
+
+    if (result.orderId) io?.emit("order:updated", { id: result.orderId });
+    if (result.confirmedResv) {
+      io?.emit("reservation:confirmed", {
+        id: result.confirmedResv.id,
+        tableId: result.confirmedResv.tableId,
+        start: result.confirmedResv.dateStart,
+        end: result.confirmedResv.dateEnd,
+      });
+      io?.emit("reservation:updated", { id: result.confirmedResv.id });
     }
 
-    return { updatedPay, confirmedResv, orderId: pay.order?.id ?? null };
-  });
-
-  const io = req.app.get("io");
-  io.emit("payment:confirmed", { id, status: "PAID" });
-  io.emit("payment:updated", { id, status: "PAID" });
-
-  if (result.orderId) {
-    io.emit("order:updated", { id: result.orderId });
-  }
-  if (result.confirmedResv) {
-    io.emit("reservation:confirmed", {
-      id: result.confirmedResv.id,
-      tableId: result.confirmedResv.tableId,
-      start: result.confirmedResv.dateStart,
-      end: result.confirmedResv.dateEnd,
+    return res.json({
+      ok: true,
+      id,
+      status: "PAID",
+      confirmedAt: now.toISOString(),
     });
-    io.emit("reservation:updated", { id: result.confirmedResv.id });
-  }
+  },
 
-  return res.json({
-    ok: true,
-    id,
-    status: "PAID",
-    confirmedAt: now.toISOString(),
-  });
-},
-
-
+  // ---------- CANCEL: POST /payment/:id/cancel ----------
   cancel: async (req: Request, res: Response) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ message: "id required" });
@@ -126,10 +119,7 @@ confirm: async (req: Request, res: Response) => {
       data: { status: "CANCELED" },
     });
 
-    const io = req.app.get("io");
-    io.emit("payment:updated", { id, status: "CANCELED" });
-
+    req.app.get("io")?.emit("payment:updated", { id, status: "CANCELED" });
     return res.json({ ok: true, id, status: "CANCELED" });
   },
-
 };

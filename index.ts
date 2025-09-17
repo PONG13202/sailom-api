@@ -105,7 +105,6 @@ io.on("connection", (socket) => {
 
   socket.on("join", (room: string) => socket.join(room));
   socket.on("leave", (room: string) => socket.leave(room));
-
   socket.on("disconnect", () => {
   });
 });
@@ -182,28 +181,25 @@ const requireAdmin: RequestHandler = (req, res, next) => {
   next();
 };
 
-// Orders (ใช้ใน SchedulePage)
+// Orders 
 app.get("/orders", authenticateToken, requireAdmin, async (req, res) => {
   try { await OrdersController.list(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
 });
-
 app.get("/orders/:id", authenticateToken, async (req, res) => {
   try { await OrdersController.get(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
 });
-
 app.patch("/orders/:id", authenticateToken, requireAdmin, async (req, res) => {
   try { await OrdersController.update(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
 });
 
-// ---------------- Payment ที่หน้าใช้ ----------------
+// ---------------- Payment  ----------------
 app.get("/payment/:id", authenticateToken, async (req, res) => {
   try { await PaymentController.get(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
 });
-
 app.post("/payment/:id/confirm", authenticateToken, requireAdmin, async (req, res) => {
   try { await PaymentController.confirm(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
@@ -214,8 +210,6 @@ app.post("/payment/:id/cancel", authenticateToken, requireAdmin, async (req, res
 });
 
 
-
-// ====== Reservation (ผู้ใช้ต้องล็อกอิน) ======
 app.post("/reservations", authenticateToken, async (req, res) => {
   try { await ReservationController.create(req, res); }
   catch { res.status(500).json({ message: "Internal Server Error" }); }
@@ -224,30 +218,18 @@ app.get("/reservation/:id", authenticateToken, async (req, res) => {
   try { await ReservationController.get(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
 });
-
-// ขอ OTP (ส่งอีเมล)
 app.post("/reservations/:id/request-otp", authenticateToken, async (req, res) => {
   try { await ReservationController.requestOtp(req, res); }
   catch { res.status(500).json({ message: "Internal Server Error" }); }
 });
-
-// ตรวจ OTP → ถ้าต้องจ่ายจะออก QR
 app.post("/reservations/:id/verify-otp", authenticateToken, async (req, res) => {
   try { await ReservationController.verifyOtp(req, res); }
   catch { res.status(500).json({ message: "Internal Server Error" }); }
 });
-
-// ยกเลิกใบจอง (เฉพาะแอดมิน)
 app.post("/reservations/:id/cancel", authenticateToken, requireAdmin, async (req, res) => {
   try { await ReservationController.cancel(req, res); }
   catch { res.status(500).json({ message: "Internal Server Error" }); }
 });
-// ใส่ใกล้ ๆ route อื่นของ reservation
-
-
-
-
-// (ของคุณมี /reservation GET สำหรับตารางรายวันแล้ว อยู่ด้านบน)
 
 // ====== Payment ======
 app.get("/payment/:id", authenticateToken, async (req, res) => {
@@ -255,7 +237,6 @@ app.get("/payment/:id", authenticateToken, async (req, res) => {
   catch { res.status(500).json({ message: "Internal Server Error" }); }
 });
 
-// อัปโหลดสลิป (multipart/form-data; field = "slip")
 app.post("/payment/:id/slip",
   authenticateToken,
   uploadSlip.single("slip"),
@@ -265,17 +246,12 @@ app.post("/payment/:id/slip",
   }
 );
 
-// แอดมินกดยืนยันสลิป
 app.post("/payment/:id/confirm",
   authenticateToken,requireAdmin,async (req, res) => {
     try { await PaymentController.confirm(req, res); }
     catch { res.status(500).json({ message: "Internal Server Error" }); }
   }
 );
-
-
-
-
 
 
 
@@ -662,7 +638,6 @@ app.delete("/delete_FoodType/:id", async (req: Request, res: Response) => {
   }
 });
 
-// slides (หลังบ้าน)
 app.get("/slides", async (req: Request, res: Response) => {
   try {
     await UserController.slides(req, res);
@@ -742,7 +717,6 @@ app.delete("/delete_contact/:id", async (req: Request, res: Response) => {
   }
 })
 
-// slides_show (หน้าบ้าน แสดงเฉพาะ slide_status = 1)
 app.get("/slides_show", async (req: Request, res: Response) => {
   try {
     await FrontController.slides_show(req, res);
@@ -792,6 +766,16 @@ app.get("/foodType", async (req: Request, res: Response) => {
     res.status(500).json({ message: "Internal Server Error" });
   }
 })
+// ประวัติการจองของฉัน (ลูกค้าฝั่งหน้าบ้าน)
+app.get("/my_reservations", authenticateToken, async (req, res) => {
+  try {
+    await FrontController.my_reservations(req, res);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
 
 // (ทางเลือก) health check
 app.get("/health", (_req: Request, res: Response) => {

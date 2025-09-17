@@ -52,8 +52,26 @@ declare module "express" {
 }
 // --- End Type Augmentation ---
 
+
+export async function emitMyReservations(req: Request, userId: number) {
+  const reservations = await prisma.reservation.findMany({
+    where: { userId },
+    orderBy: { updatedAt: "desc" },
+    include: {
+      table: true,
+      order: { include: { items: true } },
+      payment: true,
+    },
+  });
+
+  getIO(req)?.to(`user:${userId}`).emit("my_reservations:update", {
+    data: reservations,
+    now: new Date().toISOString(),
+  });
+}
+
 export const FrontController = {
-  // 1. ฟังก์ชันสำหรับลงทะเบียนผู้ใช้ทั่วไป (รองรับการอัปโหลดรูปภาพ)
+
   signup: async (req: Request, res: Response) => {
     try {
       const {
@@ -184,7 +202,6 @@ export const FrontController = {
     }
   },
 
-  // 2. ฟังก์ชันสำหรับเข้าสู่ระบบด้วย Google
   google_signin: async (req: Request, res: Response) => {
     try {
       const { token } = req.body;
@@ -309,7 +326,6 @@ export const FrontController = {
     }
   },
 
-  // 3. ฟังก์ชันสำหรับเข้าสู่ระบบด้วยชื่อผู้ใช้/อีเมลและรหัสผ่าน
   signin: async (req: Request, res: Response) => {
     try {
       const { user_name, user_pass } = req.body; // user_name สามารถเป็น username หรือ email ก็ได้
@@ -379,7 +395,6 @@ export const FrontController = {
     }
   },
 
-  // 4. ฟังก์ชันสำหรับให้ผู้ใช้กรอกข้อมูลโปรไฟล์เพิ่มเติมหลังจาก Google Sign-in ครั้งแรก
   add_profile: async (req: Request, res: Response) => {
     try {
       const authHeader = req.headers.authorization;
@@ -519,7 +534,6 @@ export const FrontController = {
     }
   },
 
-  // 5. ฟังก์ชันสำหรับดึงข้อมูลผู้ใช้ (ต้องมีการยืนยัน token)
   user_info: async (req: Request, res: Response) => {
     try {
       const userData = (req as any).user;
@@ -562,7 +576,6 @@ export const FrontController = {
     }
   },
 
-  // 6. API สำหรับตรวจสอบชื่อผู้ใช้
   check_user: async (req: Request, res: Response) => {
     try {
       const { user_name } = req.query;
@@ -588,7 +601,6 @@ export const FrontController = {
     }
   },
 
-  // 7. API สำหรับตรวจสอบอีเมล
   check_mail: async (req: Request, res: Response) => {
     const { user_email } = req.query;
 
@@ -650,28 +662,29 @@ export const FrontController = {
       });
     }
   },
-    locations: async (req: Request, res: Response) => {
-      try {
-        // มีได้แค่ 1 แถว: ถ้ายังไม่มี ให้สร้างแถวว่างไว้เลย
-        let row = await prisma.location.findFirst();
-        if (!row) {
-          row = await prisma.location.create({
-            data: {
-              location_name: "",
-              location_link: "",
-              location_map: "",
-            },
-          });
-        }
-        getIO(req)?.emit("location", row);
-        return res.status(200).json(row);
-      } catch (error: any) {
-        console.error("Error fetching location:", error);
-        return res
-          .status(500)
-          .json({ message: "ไม่สามารถดึงข้อมูลสถานที่ได้", error: error.message });
+  locations: async (req: Request, res: Response) => {
+    try {
+      // มีได้แค่ 1 แถว: ถ้ายังไม่มี ให้สร้างแถวว่างไว้เลย
+      let row = await prisma.location.findFirst();
+      if (!row) {
+        row = await prisma.location.create({
+          data: {
+            location_name: "",
+            location_link: "",
+            location_map: "",
+          },
+        });
       }
-    },
+      getIO(req)?.emit("location", row);
+      return res.status(200).json(row);
+    } catch (error: any) {
+      console.error("Error fetching location:", error);
+      return res.status(500).json({
+        message: "ไม่สามารถดึงข้อมูลสถานที่ได้",
+        error: error.message,
+      });
+    }
+  },
   grid: async (req: Request, res: Response) => {
     try {
       const gridSize = await prisma.gridSize.findUnique({
@@ -688,7 +701,7 @@ export const FrontController = {
         });
         return res.status(200).json(defaultGridSize);
       }
-getIO(req)?.emit("gridSize", gridSize);
+      getIO(req)?.emit("gridSize", gridSize);
       return res.status(200).json(gridSize);
     } catch (error: any) {
       console.error("Error fetching grid size:", error);
@@ -699,35 +712,38 @@ getIO(req)?.emit("gridSize", gridSize);
     }
   },
   table: async (req: Request, res: Response) => {
-  try {
-    const gridId = Number(req.query.gridId ?? 1);
+    try {
+      const gridId = Number(req.query.gridId ?? 1);
 
-    const tables = await prisma.tableMap.findMany({
-      where: { gridId },                       // ★ filter ตามกริด
-      include: { seatOption: true, tableType: true },
-      orderBy: { id: "asc" },
-    });
+      const tables = await prisma.tableMap.findMany({
+        where: { gridId }, // ★ filter ตามกริด
+        include: { seatOption: true, tableType: true },
+        orderBy: { id: "asc" },
+      });
 
-    const formatted = tables.map((table) => ({
-      id: String(table.id),
-      name: table.label,
-      seats: table.seatOption?.seats ?? 0,
-      tableTypeId: String(table.tableType?.id ?? ""),
-      tableTypeName: table.tableType?.name ?? "ไม่ระบุประเภท",
-      additionalInfo: table.additionalInfo ?? "",
-      x: table.x,
-      y: table.y,
-      active: table.active,
-      // (ถ้าจะส่งกลับด้วยก็ได้)
-      gridId: table.gridId,
-    }));
-    getIO(req)?.emit("table:list", formatted);
-    return res.status(200).json(formatted);
-  } catch (error: any) {
-    console.error("Error fetching tables:", error);
-    return res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลโต๊ะ", error: error.message });
-  }
-},
+      const formatted = tables.map((table) => ({
+        id: String(table.id),
+        name: table.label,
+        seats: table.seatOption?.seats ?? 0,
+        tableTypeId: String(table.tableType?.id ?? ""),
+        tableTypeName: table.tableType?.name ?? "ไม่ระบุประเภท",
+        additionalInfo: table.additionalInfo ?? "",
+        x: table.x,
+        y: table.y,
+        active: table.active,
+        // (ถ้าจะส่งกลับด้วยก็ได้)
+        gridId: table.gridId,
+      }));
+      getIO(req)?.emit("table:list", formatted);
+      return res.status(200).json(formatted);
+    } catch (error: any) {
+      console.error("Error fetching tables:", error);
+      return res.status(500).json({
+        message: "เกิดข้อผิดพลาดในการดึงข้อมูลโต๊ะ",
+        error: error.message,
+      });
+    }
+  },
   menu: async (req: Request, res: Response) => {
     try {
       const menus = await prisma.foodMenu.findMany({
@@ -740,9 +756,7 @@ getIO(req)?.emit("gridSize", gridSize);
             },
           },
         },
-        
-      }
-    );
+      });
       getIO(req)?.emit("menu", menus);
       return res.status(200).json(menus);
     } catch (error: any) {
@@ -752,21 +766,108 @@ getIO(req)?.emit("gridSize", gridSize);
         .json({ message: "Failed to fetch menus", error: error.message });
     }
   },
-    foodType: async (req: Request, res: Response) => {
-      try {
-        const foodTypes = await prisma.typefood.findMany(
-          {
-            orderBy: { name: "asc" },
-          }
-        );
-        getIO(req)?.emit("foodType", foodTypes);
-        return res.status(200).json(foodTypes);
-      } catch (error: any) {
-        console.error("Error fetching food types:", error);
-        return res
-          .status(500)
-          .json({ message: "Failed to fetch food types", error: error.message });
-      }
-    },
+  foodType: async (req: Request, res: Response) => {
+    try {
+      const foodTypes = await prisma.typefood.findMany({
+        orderBy: { name: "asc" },
+      });
+      getIO(req)?.emit("foodType", foodTypes);
+      return res.status(200).json(foodTypes);
+    } catch (error: any) {
+      console.error("Error fetching food types:", error);
+      return res
+        .status(500)
+        .json({ message: "Failed to fetch food types", error: error.message });
+    }
+  },
+my_reservations: async (req: Request, res: Response) => {
+  try {
+    const userId =
+      (req as any).userId ||
+      (req as any).user?.id ||
+      (req as any).user?.user_id;
+    if (!userId) return res.status(401).json({ message: "ไม่พบผู้ใช้" });
+
+    const reservations = await prisma.reservation.findMany({
+      where: { userId: Number(userId) },
+      orderBy: { createdAt: "desc" },
+      include: {
+        table: true,
+        payment: true,
+        order: {
+          include: { items: true, payment: true },
+        },
+      },
+    });
+
+    // collect menu images
+    const menuIds = Array.from(
+      new Set(
+        reservations.flatMap((r) =>
+          r.order?.items?.map((it) => it.menuId).filter(Boolean) || []
+        )
+      )
+    );
+    const menus = await prisma.foodMenu.findMany({
+      where: { menu_id: { in: menuIds } },
+      include: { MenuImages: true },
+    });
+    const imgByMenuId = new Map(
+      menus.map((m) => [m.menu_id, m.MenuImages[0]?.menu_image ?? null])
+    );
+
+    // build response
+    const data = reservations.map((r) => {
+      const pay = r.order?.payment || r.payment || null;
+      return {
+        id: r.id,
+        tableLabel: r.table?.label ?? null,
+        dateStart: r.dateStart?.toISOString(),
+        dateEnd: r.dateEnd?.toISOString(),
+        people: r.people,
+        status: r.status,
+        depositAmount: Number(r.depositAmount || 0),
+        order: r.order
+          ? {
+              id: r.order.id,
+              status: r.order.status,
+              total: Number(r.order.total || 0),
+              items: r.order.items.map((it) => ({
+                id: it.id,
+                menuId: it.menuId,
+                name: it.name,
+                price: Number(it.price || 0),
+                qty: Number(it.qty || 0),
+                note: it.note,
+                image: imgByMenuId.get(it.menuId) || null,
+              })),
+            }
+          : null,
+payment: pay
+  ? {
+      id: pay.id,
+      status: pay.status,
+      amount: Number(pay.amount || 0),
+      expiresAt: pay.expiresAt ? pay.expiresAt.toISOString() : null,
+      confirmedAt: pay.confirmedAt ? pay.confirmedAt.toISOString() : null,  // ✅ เพิ่มบรรทัดนี้
+      slipImage: pay.slipImage || null,
+      // ❌ ไม่ส่ง qrDataUrl ออกไป
+    }
+  : null,
+
+      };
+    });
+
+    // ✅ emit แบบเดียวกับ frontend รอฟัง
+    const io = getIO(req);
+    io?.to(`user:${userId}`).emit("my_reservations:list", { data, now: new Date().toISOString() });
+    io?.to(`user:${userId}`).emit("my_reservations:update", { data, now: new Date().toISOString() });
+
+    return res.status(200).json({ data, now: new Date().toISOString() });
+  } catch (error) {
+    console.error("my_reservations error:", error);
+    return res.status(500).json({ message: "โหลดรายการไม่สำเร็จ" });
+  }
+},
 
 };
