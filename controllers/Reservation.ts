@@ -153,7 +153,7 @@ list: async (req: Request, res: Response) => {
         table: true,
         order: { select: { id: true, status: true } },
         payment: {
-          select: { id: true, status: true, amount: true, expiresAt: true, slipImage: true },
+          select: { id: true, status: true, amount: true, expiresAt: true, slipImage: true, qrDataUrl: true,qrPayload: true },
         },
       },
     });
@@ -180,6 +180,8 @@ list: async (req: Request, res: Response) => {
       depositAmount: r.depositAmount ?? 0,
       paymentExpiresAt: r.payment?.expiresAt ? r.payment.expiresAt.toISOString() : null,
       slipImage: r.payment?.slipImage ?? null,
+      qrDataUrl: r.payment?.qrDataUrl ?? null,
+      qrPayload: r.payment?.qrPayload ?? null,
       user: {
         id: anyUser?.user_id ?? anyUser?.id ?? r.userId,
         name: userName,
@@ -197,7 +199,7 @@ list: async (req: Request, res: Response) => {
 
       const { tableId: tableIdRaw, date, time, durationMin = 60, people = 1, items } = req.body;
 
-      if (!date || !time) return res.status(400).json({ message: "date/time required" });
+      if (!date || !time) return res.status(400).json({ message: "กรุณาเลือกวันและเวลา" });
       if (!tableIdRaw) return res.status(400).json({ message: "ต้องเลือกโต๊ะก่อนทำการจอง" });
 
       const tableIdNum = Number(tableIdRaw);

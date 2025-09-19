@@ -38,6 +38,10 @@ const USER_UPLOADS_DIR = path.resolve("uploads/user_images");
 if (!fs.existsSync(USER_UPLOADS_DIR)) {
   fs.mkdirSync(USER_UPLOADS_DIR, { recursive: true });
 }
+const isLocalUserImage = (p?: string | null) =>
+  !!p &&
+  !p.startsWith("http") &&
+  (p.startsWith("uploads/user_images/") || p.startsWith("/uploads/user_images/"));
 
 // --- Type Augmentation for Express Request ---
 // This tells TypeScript that the Request object might have a 'file' property
@@ -869,5 +873,133 @@ payment: pay
     return res.status(500).json({ message: "โหลดรายการไม่สำเร็จ" });
   }
 },
+// อัปโหลดรูปโปรไฟล์
+upload_avatar: async (req: Request, res: Response) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: "ไม่พบไฟล์อัปโหลด" });
+    const relPath = `uploads/user_images/${req.file.filename}`; // เก็บเป็นพาธสัมพัทธ์
+    return res.status(200).json({ url: relPath, path: relPath });
+  } catch (e: any) {
+    console.error("upload_avatar error:", e);
+    if (req.file) fs.unlink(req.file.path, () => {});
+    return res.status(500).json({ message: "อัปโหลดรูปไม่สำเร็จ" });
+  }
+},
+
+// อัปเดตข้อมูลโปรไฟล์
+// อัปเดตข้อมูลโปรไฟล์
+// อัปเดตข้อมูลโปรไฟล์
+update_profile: async (req: Request, res: Response) => {
+  try {
+    const userData = (req as any).user;
+    const id = Number(userData?.id);
+    if (!id) return res.status(401).json({ message: "ไม่พบ userId จาก token" });
+
+    const { user_name, user_fname, user_lname, user_phone, user_img } = req.body;
+
+    // path ใหม่จากการอัปโหลดไฟล์ (ถ้ามีไฟล์แนบมาที่ฟิลด์ user_img)
+    const filePath = req.file ? `uploads/user_images/${req.file.filename}` : undefined;
+    // เลือกใช้ไฟล์ที่เพิ่งอัปโหลดก่อน ถ้าไม่มีค่อยใช้ user_img ที่ส่งมาใน body
+    const nextImg = filePath ?? (user_img || undefined);
+
+    // ตรวจชื่อผู้ใช้ซ้ำ (ยกเว้นของตัวเอง)
+    if (user_name) {
+      const exist = await prisma.user.findFirst({
+        where: { user_name, NOT: { user_id: id } },
+      });
+      if (exist) {
+        // ถ้า validate ไม่ผ่านและมีอัปโหลดไฟล์มา ให้ลบทิ้ง
+        if (req.file) fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ message: "ชื่อผู้ใช้นี้ถูกใช้ไปแล้ว" });
+      }
+    }
+
+    // อ่านค่ารูปเดิมไว้ก่อน
+    const current = await prisma.user.findUnique({
+      where: { user_id: id },
+      select: { user_img: true },
+    });
+
+    const updated = await prisma.user.update({
+      where: { user_id: id },
+      data: {
+        user_name: user_name ?? undefined,
+        user_fname: user_fname ?? undefined,
+        user_lname: user_lname ?? undefined,
+        user_phone: user_phone ?? undefined,
+        user_img: nextImg, // ใช้ path ใหม่
+      },
+      select: {
+        user_id: true,
+        user_name: true,
+        user_fname: true,
+        user_lname: true,
+        user_email: true,
+        user_phone: true,
+        user_img: true,
+        user_status: true,
+      },
+    });
+
+    // ลบไฟล์เก่า (ถ้าเป็นไฟล์ภายในและเปลี่ยนจริง)
+    try {
+      if (
+        current?.user_img &&
+        current.user_img !== nextImg &&
+        isLocalUserImage(current.user_img)
+      ) {
+        const rel = current.user_img.startsWith("/") ? `.${current.user_img}` : current.user_img;
+        const abs = path.resolve(rel);
+        if (abs.startsWith(path.resolve("uploads"))) fs.unlink(abs, () => {});
+      }
+    } catch (e) {
+      console.warn("unlink old avatar failed:", (e as Error).message);
+    }
+
+    getIO(req)?.to(`user:${id}`).emit("user:updated", updated);
+    return res.status(200).json(updated);
+  } catch (error: any) {
+    console.error("update_profile error:", error);
+    // ถ้ามีไฟล์ใหม่อัปโหลดมา แล้วพังกลางทาง ให้ลบไฟล์นั้นทิ้ง
+    if (req.file) fs.unlink(req.file.path, () => {});
+    return res.status(500).json({ message: "บันทึกไม่สำเร็จ", error: error.message });
+  }
+},
+
+
+
+// เปลี่ยนรหัสผ่าน
+change_password: async (req: Request, res: Response) => {
+  try {
+    const userData = (req as any).user;
+    const id = Number(userData?.id);
+    if (!id) return res.status(401).json({ message: "ไม่พบ userId จาก token" });
+
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: "กรุณากรอกข้อมูลให้ครบ" });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ message: "รหัสผ่านใหม่ต้องมีอย่างน้อย 6 ตัว" });
+    }
+
+    const user = await prisma.user.findUnique({ where: { user_id: id } });
+    if (!user || !user.user_pass) {
+      return res.status(400).json({ message: "บัญชีนี้ไม่มีรหัสผ่านเดิม" });
+    }
+
+    const ok = await bcrypt.compare(currentPassword, user.user_pass);
+    if (!ok) return res.status(401).json({ message: "รหัสผ่านปัจจุบันไม่ถูกต้อง" });
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await prisma.user.update({ where: { user_id: id }, data: { user_pass: hashed } });
+
+    return res.status(200).json({ message: "เปลี่ยนรหัสผ่านแล้ว" });
+  } catch (error: any) {
+    console.error("change_password error:", error);
+    return res.status(500).json({ message: "ไม่สามารถเปลี่ยนรหัสผ่านได้" });
+  }
+},
+
 
 };

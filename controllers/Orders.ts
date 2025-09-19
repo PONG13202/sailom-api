@@ -59,48 +59,51 @@ export const OrdersController = {
       if (arr.length) where.payment = { is: { status: { in: arr } } };
     }
 
-    const [total, list] = await prisma.$transaction([
-      prisma.order.count({ where }),
-      prisma.order.findMany({
-        where,
-        include: {
-          items: true,
-          payment: true,
-          reservation: { include: { table: true, user: true } },
-          user: true,
-        },
-        orderBy: { createdAt: "desc" },
-        skip: (p - 1) * ps,
-        take: ps,
-      }),
-    ]);
+const [total, list] = await prisma.$transaction([
+  prisma.order.count({ where }),
+  prisma.order.findMany({
+    where,
+    include: {
+      items: true,
+      payment: true,
+      reservation: { include: { table: true, user: true } },
+      user: true,
+    },
+    orderBy: { createdAt: "desc" },
+    skip: (p - 1) * ps,
+    take: ps,
+  }),
+]);
 
-    const data = list.map((o) => ({
-      id: o.id,
-      userId: o.userId,
-      total: o.total,
-      status: o.status,
-      paymentId: o.paymentId,
-      createdAt: o.createdAt.toISOString(),
-      items: o.items.map((it) => ({
-        id: it.id,
-        menuId: it.menuId,
-        name: it.name,
-        price: it.price,
-        qty: it.qty,
-        note: it.note,
-        options: it.options,
-      })),
-      // enrich สำหรับตาราง
-      reservationId: o.reservation?.id ?? null,
-      tableLabel: o.reservation?.table?.label ?? null,
-      start: o.reservation?.dateStart?.toISOString() ?? null,
-      user: {
-        id: o.userId,
-        name: o.reservation?.user?.user_name ?? o.user?.user_name ?? null,
-        phone: o.reservation?.user?.user_phone ?? o.user?.user_phone ?? null,
-      },
-    }));
+const data = list.map((o) => ({
+  id: o.id,
+  userId: o.userId,
+  total: o.total,
+  status: o.status,
+  paymentId: o.paymentId,
+  createdAt: o.createdAt.toISOString(),
+  items: o.items.map((it) => ({
+    id: it.id,
+    menuId: it.menuId,
+    name: it.name,
+    price: it.price,
+    qty: it.qty,
+    note: it.note,
+    options: it.options,
+  })),
+  reservationId: o.reservation?.id ?? null,
+  tableLabel: o.reservation?.table?.label ?? null,
+  start: o.reservation?.dateStart?.toISOString() ?? null,
+  user: o.user ? {
+    id: o.user.user_id,
+    fname: o.user.user_fname,
+    lname: o.user.user_lname,
+    email: o.user.user_email,
+    phone: o.user.user_phone,
+    img: o.user.user_img,
+  } : null,
+}));
+
 
     return res.json({
       data,
@@ -113,39 +116,41 @@ export const OrdersController = {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ message: "id required" });
 
-    const ord = await prisma.order.findUnique({
-      where: { id },
-      include: { items: true, reservation: { include: { table: true } }, user: true },
-    });
-    if (!ord) return res.status(404).json({ message: "not found" });
+const ord = await prisma.order.findUnique({
+  where: { id },
+  include: { items: true, reservation: { include: { table: true } }, user: true },
+});
+if (!ord) return res.status(404).json({ message: "not found" });
 
-    return res.json({
-      id: ord.id,
-      userId: ord.userId,
-      total: ord.total,
-      status: ord.status,
-      paymentId: ord.paymentId,
-      createdAt: ord.createdAt,
-      reservationId: ord.reservation?.id ?? null,
-      tableLabel: ord.reservation?.table?.label ?? null,
-      start: ord.reservation?.dateStart?.toISOString() ?? null,
-      user: ord.user
-        ? {
-            id: ord.user.user_id,
-            name: displayName(ord.user),
-            phone: ord.user.user_phone || undefined,
-          }
-        : undefined,
-      items: ord.items.map((it) => ({
-        id: it.id,
-        menuId: it.menuId,
-        name: it.name,
-        price: it.price,
-        qty: it.qty,
-        note: it.note,
-        options: it.options,
-      })),
-    });
+return res.json({
+  id: ord.id,
+  userId: ord.userId,
+  total: ord.total,
+  status: ord.status,
+  paymentId: ord.paymentId,
+  createdAt: ord.createdAt,
+  reservationId: ord.reservation?.id ?? null,
+  tableLabel: ord.reservation?.table?.label ?? null,
+  start: ord.reservation?.dateStart?.toISOString() ?? null,
+  user: ord.user ? {
+    id: ord.user.user_id,
+    fname: ord.user.user_fname,
+    lname: ord.user.user_lname,
+    email: ord.user.user_email,
+    phone: ord.user.user_phone,
+    img: ord.user.user_img,
+  } : null,
+  items: ord.items.map((it) => ({
+    id: it.id,
+    menuId: it.menuId,
+    name: it.name,
+    price: it.price,
+    qty: it.qty,
+    note: it.note,
+    options: it.options,
+  })),
+});
+
   },
 
   /** ---------- UPDATE: PATCH /orders/:id ----------

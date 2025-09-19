@@ -775,6 +775,33 @@ app.get("/my_reservations", authenticateToken, async (req, res) => {
     res.status(500).json({ message: "Internal Server Error" });
   }
 });
+// อัปโหลดรูปโปรไฟล์ (อย่าลืมใช้ storage user_images ที่ประกาศไว้)
+app.post(
+  "/upload_avatar",
+  authenticateToken,
+  upload.single("file"),
+  async (req, res) => {
+    try { await FrontController.upload_avatar(req, res); }
+    catch { res.status(500).json({ message: "Internal Server Error" }); }
+  }
+);
+
+// อัปเดตข้อมูลโปรไฟล์
+// เดิม: app.put("/update_profile", authenticateToken, async (req,res)=>{...})
+app.put(
+  "/update_profile",
+  authenticateToken,
+  upload.single("user_img"),   // << เพิ่ม multer ตรงนี้ ฟิลด์ชื่อ user_img
+  async (req, res) => { await FrontController.update_profile(req, res); }
+);
+
+
+// เปลี่ยนรหัสผ่าน
+app.post("/change_password", authenticateToken, async (req, res) => {
+  try { await FrontController.change_password(req, res); }
+  catch { res.status(500).json({ message: "Internal Server Error" }); }
+});
+
 
 
 // (ทางเลือก) health check
