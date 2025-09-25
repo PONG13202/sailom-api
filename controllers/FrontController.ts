@@ -244,11 +244,15 @@ export const FrontController = {
         const existingUserByEmail = await prisma.user.findUnique({
           where: { user_email: email },
         });
+        
 
         if (existingUserByEmail) {
           // ถ้ามีผู้ใช้ที่มีอีเมลนี้อยู่แล้ว แต่ยังไม่มี google_id
           if (!existingUserByEmail.google_id) {
             // อัปเดตผู้ใช้เดิมโดยเพิ่ม google_id และรูปโปรไฟล์
+                    if (existingUserByEmail.user_status !== 1) {
+          return res.status(403).json({ message: "บัญชีนี้ถูกระงับการใช้งาน" });
+        }
             user = await prisma.user.update({
               where: { user_email: email },
               data: { google_id: googleId, user_img: profile_image },
@@ -288,7 +292,9 @@ export const FrontController = {
           });
         }
       }
-
+    if (user.user_status !== 1) {
+      return res.status(403).json({ message: "บัญชีนี้ถูกระงับการใช้งาน" });
+    }
       // ถ้าผู้ใช้มีอยู่แล้วหรือถูกสร้าง/อัปเดตเรียบร้อยแล้ว
       // สร้าง JWT token สำหรับการเข้าสู่ระบบปกติ
       const jwtToken = jwt.sign(
@@ -361,6 +367,9 @@ export const FrontController = {
       if (!isMatch) {
         return res.status(401).json({ message: "รหัสผ่านไม่ถูกต้อง" });
       }
+      if (user.user_status !== 1) {
+  return res.status(403).json({ message: "บัญชีนี้ถูกระงับการใช้งาน" });
+}
 
       // สร้าง JWT token
       const jwtToken = jwt.sign(
@@ -748,28 +757,26 @@ export const FrontController = {
       });
     }
   },
-  menu: async (req: Request, res: Response) => {
-    try {
-      const menus = await prisma.foodMenu.findMany({
-        orderBy: { menu_name: "asc" },
-        include: {
-          MenuImages: true,
-          Typefoods: {
-            include: {
-              typefood: true,
-            },
-          },
-        },
-      });
-      getIO(req)?.emit("menu", menus);
-      return res.status(200).json(menus);
-    } catch (error: any) {
-      console.error("Error fetching menus:", error);
-      return res
-        .status(500)
-        .json({ message: "Failed to fetch menus", error: error.message });
-    }
-  },
+// GET /menus_show  (public)
+menu: async (req: Request, res: Response) => {
+  try {
+    const menus = await prisma.foodMenu.findMany({
+      where: { menu_status: 1 },          // โชว์เฉพาะเมนู Active
+      orderBy: { menu_name: "asc" },
+      include: {
+        MenuImages: true,                 // ยัง include เพื่อให้ FE เลือกรูปหลักได้
+        Typefoods: { include: { typefood: true } },
+      },
+    });
+    // อย่า emit ที่นี่
+    return res.status(200).json(menus);
+  } catch (error: any) {
+    console.error("Error fetching menus:", error);
+    return res.status(500).json({ message: "Failed to fetch menus", error: error.message });
+  }
+},
+
+
   foodType: async (req: Request, res: Response) => {
     try {
       const foodTypes = await prisma.typefood.findMany({

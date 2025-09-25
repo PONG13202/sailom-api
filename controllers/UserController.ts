@@ -307,23 +307,13 @@ export const UserController = {
           .json({ message: "อีเมล Google ยังไม่ได้รับการยืนยัน" });
       }
 
-      // ตรวจสอบ admin จาก email หลังจากได้ email แล้ว
-      const adminByEmail = await prisma.admin.findFirst({
-        where: {
-          user: {
-            user_email: email,
-          },
-        },
-        include: {
-          user: true,
-        },
-      });
-
-      if (!adminByEmail) {
-        return res.status(403).json({
-          message: "ไม่สามารถเข้าสู่ระบบได้ ไม่ใช่ผู้ดูแลระบบ",
-        });
-      }
+const [adminByEmail, staffByEmail] = await Promise.all([
+  prisma.admin.findFirst({ where: { user: { user_email: email } }, include: { user: true } }),
+  prisma.staff.findFirst({ where: { user: { user_email: email } }, include: { user: true } }),
+]);
+if (!adminByEmail && !staffByEmail) {
+  return res.status(403).json({ message: "ไม่สามารถเข้าสู่ระบบได้ (ต้องเป็นผู้ดูแลหรือพนักงาน)" });
+}
 
       const existingUser = await prisma.user.findUnique({
         where: { user_email: email },
@@ -341,27 +331,30 @@ export const UserController = {
       });
 
       if (existingUser) {
-        const isAdmin = await prisma.admin.findFirst({
-          where: { user_id: existingUser.user_id },
-        });
+const [adminRow, staffRow] = await Promise.all([
+        prisma.admin.findFirst({ where: { user_id: existingUser.user_id } }),
+        prisma.staff.findFirst({ where: { user_id: existingUser.user_id } }),
+      ]);
+      const isAdmin = !!adminRow;
+      const isStaff = !!staffRow;
+      const roles = buildRoles(isAdmin, isStaff);
 
-        if (!isAdmin) {
-          return res.status(403).json({
-            message: "ผู้ใช้ไม่ใช่แอดมิน ไม่สามารถเข้าสู่ระบบหลังบ้านได้",
-          });
-        }
+      if (!isAdmin && !isStaff) {
+        // เผื่อกรณีอีเมลถูกอนุญาตจากตารางอื่น แต่ user_id นี้ไม่ใช่ admin/staff แล้ว
+        return res.status(403).json({ message: "ไม่สามารถเข้าสู่ระบบได้ (ต้องเป็นผู้ดูแลหรือพนักงาน)" });
+      }
+        
+        
 
         // --- เริ่มต้นการแก้ไขตรงนี้ ---
         // ถ้าผู้ใช้มีบัญชีอยู่แล้ว แต่อีเมลนั้นยังไม่มี google_id หรือ google_id ไม่ตรงกัน
-        if (!existingUser.google_id || existingUser.google_id !== googleId) {
-          // อัปเดต google_id ของบัญชีที่มีอยู่
-          await prisma.user.update({
-            where: { user_id: existingUser.user_id },
-            data: { google_id: googleId, user_img: profile_image },
-          });
-          // อัปเดตข้อมูล existingUser เพื่อให้ค่า google_id ล่าสุด
-          existingUser.google_id = googleId;
-        }
+      if (!existingUser.google_id || existingUser.google_id !== googleId) {
+        await prisma.user.update({
+          where: { user_id: existingUser.user_id },
+          data: { google_id: googleId, user_img: profile_image },
+        });
+        existingUser.google_id = googleId;
+      }
         // --- สิ้นสุดการแก้ไขตรงนี้ ---
 
         // ไม่จำเป็นต้องตรวจสอบ existingUser.google_id !== googleId อีกต่อไป
@@ -377,7 +370,9 @@ export const UserController = {
             user_img: existingUser.user_img,
             user_phone: existingUser.user_phone,
             user_status: existingUser.user_status,
-            isAdmin: true,
+            isAdmin,
+            isStaff,
+            roles,
           },
           process.env.JWT_SECRET!,
           { expiresIn: "1d" }
@@ -389,11 +384,12 @@ export const UserController = {
           token: jwtToken,
           user: {
             ...safeUser,
-            isAdmin: true,
+          isAdmin,
+          isStaff,
+          roles,
           },
         });
       }
-
       // ยังไม่มีบัญชี -> ขอข้อมูลเพิ่มก่อน
       const tempToken = jwt.sign(
         {
@@ -528,75 +524,93 @@ export const UserController = {
       return res.status(500).json({ message: "ไม่สามารถสร้างบัญชีได้" });
     }
   },
-  login: async (req: Request, res: Response) => {
-    try {
-      const { user_name, user_email, user_pass } = req.body;
+login: async (req: Request, res: Response) => {
+  try {
+    const { user_name, user_email, user_pass } = req.body;
 
-      // ตรวจสอบให้กรอกอย่างน้อยชื่อผู้ใช้หรืออีเมล และรหัสผ่าน
-      if ((!user_name && !user_email) || !user_pass) {
-        return res.status(400).json({
-          message: "กรุณากรอกชื่อผู้ใช้หรืออีเมล และรหัสผ่าน",
-        });
-      }
-
-      const user = await prisma.user.findFirst({
-        where: {
-          OR: [
-            { user_name: user_name || undefined },
-            { user_email: user_name || undefined },
-          ],
-        },
+    // ใช้ตัวเดียวในการค้นหา (รับได้ทั้ง username หรือ email)
+    const loginId = (user_name || user_email || "").trim();
+    if (!loginId || !user_pass) {
+      return res.status(400).json({
+        message: "กรุณากรอกชื่อผู้ใช้/อีเมล และรหัสผ่าน",
       });
-
-      if (!user) {
-        return res.status(404).json({ message: "ไม่พบผู้ใช้นี้ในระบบ" });
-      }
-
-      const isMatch = await bcrypt.compare(user_pass, user.user_pass || "");
-      if (!isMatch) {
-        return res.status(401).json({ message: "รหัสผ่านไม่ถูกต้อง" });
-      }
-      const admin = await prisma.admin.findFirst({
-        where: { user_id: user.user_id },
-      });
-      const isAdmin = !!admin;
-
-      const token = jwt.sign(
-        {
-          id: user.user_id,
-          user_name: user.user_name,
-          user_fname: user.user_fname,
-          user_lname: user.user_lname,
-          user_email: user.user_email,
-          user_img: user.user_img,
-          user_phone: user.user_phone,
-          user_status: user.user_status,
-          isAdmin,
-        },
-        process.env.JWT_SECRET!, // ให้แน่ใจว่า JWT_SECRET มีค่าใน .env
-        { expiresIn: "1d" } // 10 seconds
-      );
-
-      return res.status(200).json({
-        message: "เข้าสู่ระบบสำเร็จ",
-        token,
-        user: {
-          id: user.user_id,
-          user_name: user.user_name,
-          user_fname: user.user_fname,
-          user_lname: user.user_lname,
-          user_email: user.user_email,
-          user_phone: user.user_phone,
-          user_status: user.user_status,
-          user_img: user.user_img,
-          isAdmin,
-        },
-      });
-    } catch (error) {
-      console.error(error);
-      return res.status(500).json({ message: "เกิดข้อผิดพลาดในระบบ" });
     }
-  },
+
+    // ✅ แก้ where เดิมที่ผิด (เคยใส่ user_email: user_name)
+    const user = await prisma.user.findFirst({
+      where: { OR: [{ user_name: loginId }, { user_email: loginId }] },
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "ไม่พบผู้ใช้นี้ในระบบ" });
+    }
+    if (user.user_status === 0) {
+      return res.status(403).json({ message: "บัญชีนี้ถูกระงับการใช้งาน" });
+    }
+    if (!user.user_pass) {
+      // บัญชีที่สมัครด้วย Google จะไม่มีรหัสผ่านใน DB
+      return res.status(400).json({ message: "บัญชีนี้เข้าสู่ระบบด้วย Google เท่านั้น" });
+    }
+
+    const isMatch = await bcrypt.compare(user_pass, user.user_pass);
+    if (!isMatch) {
+      return res.status(401).json({ message: "รหัสผ่านไม่ถูกต้อง" });
+    }
+
+    // ตรวจบทบาท
+    const [adminRow, staffRow] = await Promise.all([
+      prisma.admin.findFirst({ where: { user_id: user.user_id } }),
+      prisma.staff.findFirst({ where: { user_id: user.user_id } }),
+    ]);
+    const isAdmin = !!adminRow;
+    const isStaff = !!staffRow;
+    const roles = buildRoles(isAdmin, isStaff);
+
+    // ✅ หลังบ้าน: อนุญาตเฉพาะ admin หรือ staff
+    if (!isAdmin && !isStaff) {
+      return res.status(403).json({ message: "เฉพาะผู้ดูแลหรือพนักงานเท่านั้น" });
+    }
+
+    const token = jwt.sign(
+      {
+        id: user.user_id,
+        user_name: user.user_name,
+        user_fname: user.user_fname,
+        user_lname: user.user_lname,
+        user_email: user.user_email,
+        user_img: user.user_img,
+        user_phone: user.user_phone,
+        user_status: user.user_status,
+        isAdmin,
+        isStaff,
+        roles,
+      },
+      process.env.JWT_SECRET!,
+      { expiresIn: "1d" }
+    );
+
+    return res.status(200).json({
+      message: "เข้าสู่ระบบสำเร็จ",
+      token,
+      user: {
+        id: user.user_id,
+        user_name: user.user_name,
+        user_fname: user.user_fname,
+        user_lname: user.user_lname,
+        user_email: user.user_email,
+        user_phone: user.user_phone,
+        user_status: user.user_status,
+        user_img: user.user_img,
+        isAdmin,
+        isStaff,
+        roles,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ message: "เกิดข้อผิดพลาดในระบบ" });
+  }
+},
+
   all_user: async (req: Request, res: Response) => {
     try {
       const users = await prisma.user.findMany({
@@ -1567,29 +1581,22 @@ export const UserController = {
       });
     }
   },
-  menus: async (req: Request, res: Response) => {
-    try {
-      const menus = await prisma.foodMenu.findMany({
-        orderBy: { menu_id: "asc" },
-        include: {
-          MenuImages: true,
-          Typefoods: {
-            include: {
-              typefood: true,
-            },
-          },
-        },
-      });
-      emit(req, "menu", menus);
-
-      return res.status(200).json(menus);
-    } catch (error: any) {
-      console.error("Error fetching menus:", error);
-      return res
-        .status(500)
-        .json({ message: "Failed to fetch menus", error: error.message });
-    }
-  },
+menus: async (req: Request, res: Response) => {
+  try {
+    const menus = await prisma.foodMenu.findMany({
+      orderBy: { menu_id: "asc" },
+      include: {
+        MenuImages: true,
+        Typefoods: { include: { typefood: true } },
+      },
+    });
+    getIO(req)?.emit("menu:list", menus); // ใช้สำหรับ backoffice
+    return res.status(200).json(menus);
+  } catch (error: any) {
+    console.error("Error fetching menus:", error);
+    return res.status(500).json({ message: "Failed to fetch menus" });
+  }
+},
   add_menu: async (req: Request, res: Response) => {
     // ดึง mainImageIndex ออกมาจาก req.body ด้วย
     const {
@@ -1598,6 +1605,7 @@ export const UserController = {
       menu_description,
       typefoodIds,
       mainImageIndex,
+      menu_status, 
     } = req.body;
 
     // Parse inputs (assuming typefoodIds is a JSON array string or array)
@@ -1635,7 +1643,8 @@ export const UserController = {
           menu_name,
           menu_price: parseInt(menu_price), // Ensure price is integer
           menu_description: menu_description || null, // ตรวจสอบว่ามีค่า description หรือไม่ ถ้าไม่มีให้เป็น null
-          menu_status: 1, // สถานะของเมนูโดยรวม (อาจจะเป็น 1 เสมอเมื่อสร้างใหม่)
+          menu_status: menu_status !== undefined ? parseInt(menu_status) : 1,
+
 
           Typefoods: {
             create: parsedTypefoodIds.map((id) => ({
@@ -1703,6 +1712,7 @@ export const UserController = {
         typefoodIds,
         existingImages,
         mainImageIdentifier,
+        menu_status, 
       } = req.body;
 
       if (isNaN(menuId)) {
@@ -1800,6 +1810,7 @@ export const UserController = {
           menu_name: menu_name,
           menu_price: parseInt(menu_price),
           menu_description: menu_description || null,
+          menu_status: menu_status !== undefined ? parseInt(menu_status) : currentMenu.menu_status,  
         },
       });
 
@@ -1872,7 +1883,19 @@ export const UserController = {
         });
       }
 
-      emit(req, "menu:updated", { menu_id: menuId });
+ const updatedMenuFull = await prisma.foodMenu.findUnique({
+  where: { menu_id: menuId },
+  include: {
+    MenuImages: true,
+    Typefoods: { include: { typefood: true } },
+  },
+});
+
+emit(req, "menu:updated", updatedMenuFull);
+res.status(200).json({
+  message: "Menu updated successfully.",
+  menu: updatedMenuFull,
+});
       res
         .status(200)
         .json({ message: "Menu updated successfully.", menu: updatedMenu });
@@ -1953,7 +1976,6 @@ export const UserController = {
       });
     }
   },
-
   grid_size: async (req: Request, res: Response) => {
     try {
       const gridSize = await prisma.gridSize.findUnique({

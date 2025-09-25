@@ -171,7 +171,7 @@ const authenticateToken: RequestHandler = (req, res, next) => {
     next();
   });
 };
-
+// 
 
 const requireAdmin: RequestHandler = (req, res, next) => {
   if (!(req as any).user?.isAdmin) {
@@ -182,7 +182,7 @@ const requireAdmin: RequestHandler = (req, res, next) => {
 };
 
 // Orders 
-app.get("/orders", authenticateToken, requireAdmin, async (req, res) => {
+app.get("/orders", authenticateToken, async (req, res) => {
   try { await OrdersController.list(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
 });
@@ -190,7 +190,7 @@ app.get("/orders/:id", authenticateToken, async (req, res) => {
   try { await OrdersController.get(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
 });
-app.patch("/orders/:id", authenticateToken, requireAdmin, async (req, res) => {
+app.patch("/orders/:id", authenticateToken, async (req, res) => {
   try { await OrdersController.update(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
 });
@@ -200,11 +200,11 @@ app.get("/payment/:id", authenticateToken, async (req, res) => {
   try { await PaymentController.get(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
 });
-app.post("/payment/:id/confirm", authenticateToken, requireAdmin, async (req, res) => {
+app.post("/payment/:id/confirm", authenticateToken, async (req, res) => {
   try { await PaymentController.confirm(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
 });
-app.post("/payment/:id/cancel", authenticateToken, requireAdmin, async (req, res) => {
+app.post("/payment/:id/cancel", authenticateToken, async (req, res) => {
   try { await PaymentController.cancel(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
 });
@@ -226,7 +226,7 @@ app.post("/reservations/:id/verify-otp", authenticateToken, async (req, res) => 
   try { await ReservationController.verifyOtp(req, res); }
   catch { res.status(500).json({ message: "Internal Server Error" }); }
 });
-app.post("/reservations/:id/cancel", authenticateToken, requireAdmin, async (req, res) => {
+app.post("/reservations/:id/cancel", authenticateToken, async (req, res) => {
   try { await ReservationController.cancel(req, res); }
   catch { res.status(500).json({ message: "Internal Server Error" }); }
 });
@@ -247,7 +247,7 @@ app.post("/payment/:id/slip",
 );
 
 app.post("/payment/:id/confirm",
-  authenticateToken,requireAdmin,async (req, res) => {
+  authenticateToken,async (req, res) => {
     try { await PaymentController.confirm(req, res); }
     catch { res.status(500).json({ message: "Internal Server Error" }); }
   }
