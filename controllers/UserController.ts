@@ -2497,6 +2497,69 @@ export const UserController = {
       return res.status(500).json({ message: "listByDay error" });
     }
   },
+    // ดึงรายละเอียดใบจอง (ใช้ในหน้าแอดมินดูบิล/สลิป)
+  detail: async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      if (!id) return res.status(400).json({ message: "id required" });
+
+      const r = await prisma.reservation.findUnique({
+        where: { id },
+        include: {
+          user: true,
+          table: true,
+          order: { select: { id: true, status: true } },
+          payment: {
+            select: {
+              id: true,
+              status: true,
+              amount: true,
+              expiresAt: true,
+              slipImage: true,
+            },
+          },
+        },
+      });
+
+      if (!r) return res.status(404).json({ message: "ไม่พบรายการ" });
+
+      // สร้างชื่อผู้ใช้จากฟิลด์ที่มีอยู่จริงในฐานข้อมูลของคุณ
+      const anyUser = r.user as any;
+      const userName =
+        [anyUser?.user_fname, anyUser?.user_lname].filter(Boolean).join(" ").trim() ||
+        anyUser?.user_name ||
+        anyUser?.username ||
+        "";
+
+      return res.json({
+        id: r.id,
+        userId: r.userId,
+        tableId: r.tableId,
+        tableLabel: (r as any).table?.label ?? null,
+        dateStart: r.dateStart.toISOString(),
+        dateEnd: r.dateEnd ? r.dateEnd.toISOString() : null, // ถ้ามี
+        people: r.people,
+        status: r.status,
+        orderId: r.order?.id ?? null,
+        paymentId: r.payment?.id ?? null,
+        depositAmount: r.depositAmount ?? 0,
+        paymentExpiresAt: r.payment?.expiresAt
+          ? r.payment.expiresAt.toISOString()
+          : null,
+        slipImage: r.payment?.slipImage ?? null,
+        user: {
+          id: anyUser?.user_id ?? anyUser?.id ?? r.userId,
+          name: userName,
+          phone: anyUser?.user_phone ?? null,
+          email: anyUser?.user_email ?? null,
+        },
+      });
+    } catch (e: any) {
+      console.error(e);
+      return res.status(500).json({ message: "detail error", error: e.message });
+    }
+  },
+
   // --- End Contacts API ---
 
   // ===== End Location & Contacts API =====

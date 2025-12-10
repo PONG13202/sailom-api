@@ -12,8 +12,10 @@ import http from "http";
 import { Server } from "socket.io";
 import { ReservationController } from "./controllers/Reservation";
 import { PaymentController } from "./controllers/Payment";
+import { OrdersController } from "./controllers/Orders";
 import type { RequestHandler } from "express";
-
+import { PrismaClient } from "@prisma/client";
+const prisma = new PrismaClient();
 
 dotenv.config();
 
@@ -23,19 +25,22 @@ const port = 5000;
 app.use(
   cors({
     origin: ["http://localhost:3000", "http://localhost:3001"],
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
   })
 );
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+const extraUploadDir = process.env.UPLOAD_DIR || "uploads";
 
 [
   "uploads",
   "uploads/user_images",
   "uploads/menu_images",
   "uploads/slide_images",
+  "uploads/slips_images",
+   extraUploadDir,
 ].forEach((dir) => {
   const abs = path.resolve(dir);
   if (!fs.existsSync(abs)) fs.mkdirSync(abs, { recursive: true });
@@ -47,12 +52,57 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: ["http://localhost:3000", "http://localhost:3001"],
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
   },
 });
 
 app.set("io", io);
+async function expireSweep() {
+  const now = new Date();
+
+  // 1) หมดเวลา Payment -> EXPIRED (รวมที่ SUBMITTED ค้างรอตรวจ)
+  const expiredPayments = await prisma.payment.updateMany({
+    where: {
+      status: { in: ["PENDING", "SUBMITTED"] },
+      expiresAt: { lt: now },
+    },
+    data: { status: "EXPIRED" },
+  });
+
+  // 2) จองที่ยังไม่คอนเฟิร์มและเลยเวลา QR -> EXPIRED
+  const expiredResv = await prisma.reservation.updateMany({
+    where: {
+      status: { in: ["PENDING_OTP", "OTP_VERIFIED", "AWAITING_PAYMENT"] },
+      OR: [
+        { paymentExpiresAt: { lt: now } },
+        // กันกรณีไม่มี paymentExpiresAt (เช่น OTP หมดอายุแล้วไม่ชำระ)
+        { OtpCode: { is: { expiresAt: { lt: now } } } },
+      ],
+    },
+    data: { status: "EXPIRED" },
+  });
+
+  // 3) ยกเลิกออร์เดอร์ที่ยัง PENDING แต่ payment หมดเวลา
+  await prisma.order.updateMany({
+    where: { status: "PENDING", payment: { status: "EXPIRED" } },
+    data: { status: "CANCELED" },
+  });
+
+  // 4) ลบ OTP ที่หมดอายุออก (ลดขยะ DB)
+  await prisma.otpCode.deleteMany({ where: { expiresAt: { lt: now } } });
+
+  // แจ้ง realtime ให้แดชบอร์ด/ตารางรีเฟรช
+  if (expiredPayments || expiredResv) {
+    io.emit("reservation:expired", { at: now.toISOString() });
+  }
+}
+
+// ทำงานทุก 30 วิ
+setInterval(() => {
+  expireSweep().catch((e) => console.error("[sweeper] error:", e));
+}, 30_000);
+
 
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
@@ -96,7 +146,7 @@ const uploadSlide = multer({ storage: slideStorage });
 // payment slip images
 const slipStorage = multer.diskStorage({
   destination: (_req, _file, cb) =>
-    cb(null, process.env.UPLOAD_DIR || "uploads"), // อยู่ใต้ /uploads ก็พอ
+    cb(null,"uploads/slips_images"), // อยู่ใต้ /uploads ก็พอ
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname);
     cb(null, `slip-${Date.now()}-${Math.round(Math.random()*1e9)}${ext}`);
@@ -110,17 +160,23 @@ const authenticateToken: RequestHandler = (req, res, next) => {
   const token = authHeader && authHeader.split(" ")[1];
   if (!token) {
     res.status(401).json({ message: "ไม่ได้รับ token" });
-    return; // ✅ จบด้วย void
+    return;
   }
-  jwt.verify(token, process.env.JWT_SECRET as string, (err, user) => {
+  jwt.verify(token, process.env.JWT_SECRET as string, (err, decoded: any) => {
     if (err) {
       res.status(403).json({ message: "token ไม่ถูกต้อง" });
-      return; // ✅ จบด้วย void
+      return;
     }
-    (req as any).user = user;
+    (req as any).user = decoded;
+    // ✅ ยุบชื่อ field ให้เป็น userId มาตรฐานเดียว
+    (req as any).userId = Number(
+      decoded?.user_id ?? decoded?.id ?? decoded?.userId
+    ) || undefined;
+    
     next();
   });
 };
+
 
 const requireAdmin: RequestHandler = (req, res, next) => {
   if (!(req as any).user?.isAdmin) {
@@ -129,6 +185,34 @@ const requireAdmin: RequestHandler = (req, res, next) => {
   }
   next();
 };
+
+// Orders (ใช้ใน SchedulePage)
+app.get("/orders", authenticateToken, requireAdmin, async (req, res) => {
+  try { await OrdersController.list(req, res); }
+  catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
+});
+
+app.get("/orders/:id", authenticateToken, async (req, res) => {
+  try { await OrdersController.get(req, res); }
+  catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
+});
+
+app.patch("/orders/:id", authenticateToken, requireAdmin, async (req, res) => {
+  try { await OrdersController.update(req, res); }
+  catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
+});
+
+// ---------------- Payment ที่หน้าใช้ ----------------
+app.get("/payment/:id", authenticateToken, async (req, res) => {
+  try { await PaymentController.get(req, res); }
+  catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
+});
+
+app.post("/payment/:id/confirm", authenticateToken, requireAdmin, async (req, res) => {
+  try { await PaymentController.confirm(req, res); }
+  catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
+});
+
 
 // ====== Reservation (ผู้ใช้ต้องล็อกอิน) ======
 app.post("/reservations", authenticateToken, async (req, res) => {
@@ -147,6 +231,13 @@ app.post("/reservations/:id/verify-otp", authenticateToken, async (req, res) => 
   try { await ReservationController.verifyOtp(req, res); }
   catch { res.status(500).json({ message: "Internal Server Error" }); }
 });
+
+// ยกเลิกใบจอง (เฉพาะแอดมิน)
+app.post("/reservations/:id/cancel", authenticateToken, requireAdmin, async (req, res) => {
+  try { await ReservationController.cancel(req, res); }
+  catch { res.status(500).json({ message: "Internal Server Error" }); }
+});
+
 
 // (ของคุณมี /reservation GET สำหรับตารางรายวันแล้ว อยู่ด้านบน)
 

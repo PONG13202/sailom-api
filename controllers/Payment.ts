@@ -13,33 +13,38 @@ export const PaymentController = {
     return res.json(row);
   },
 
-  uploadSlip: async (req: Request, res: Response) => {
-    try {
-      const id = Number(req.params.id);
-      if (!req.file) return res.status(400).json({ message: "no file" });
+uploadSlip: async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await prisma.payment.findUnique({ where: { id } });
+    if (!row) return res.status(404).json({ message: "payment not found" });
 
-      const filePath = `/${process.env.UPLOAD_DIR || "uploads"}/${
-        req.file.filename
-      }`;
-      const absUrl = `${process.env.PUBLIC_BASE_URL || ""}${filePath}`;
-
-      const p = await prisma.payment.update({
-        where: { id },
-        data: { slipImage: absUrl, status: "SUBMITTED" },
-      });
-      getIO(req)?.emit("payment:submitted", {
-        id: p.id,
-        status: p.status,
-        slipImage: p.slipImage,
-      });
-      return res.json({ ok: true, payment: p });
-    } catch (e: any) {
-      console.error(e);
-      return res
-        .status(500)
-        .json({ message: "upload slip error", error: e.message });
+    // ❗ กันอัปโหลดหลังหมดเวลา หรือหลังจ่ายแล้ว
+    if (new Date() > row.expiresAt || row.status === "EXPIRED") {
+      return res.status(400).json({ message: "payment expired" });
     }
-  },
+    if (row.status === "PAID") {
+      return res.status(400).json({ message: "already paid" });
+    }
+
+    if (!req.file) return res.status(400).json({ message: "no file" });
+
+    const filePath = `/${process.env.UPLOAD_DIR || "uploads"}/${req.file.filename}`;
+    const absUrl = `${process.env.PUBLIC_BASE_URL || ""}${filePath}`;
+
+    const p = await prisma.payment.update({
+      where: { id },
+      data: { slipImage: absUrl, status: "SUBMITTED" },
+    });
+
+    getIO(req)?.emit("payment:submitted", { id: p.id, status: p.status, slipImage: p.slipImage });
+    return res.json({ ok: true, payment: p });
+  } catch (e: any) {
+    console.error(e);
+    return res.status(500).json({ message: "upload slip error", error: e.message });
+  }
+},
+
 
   confirm: async (req: Request, res: Response) => {
     try {

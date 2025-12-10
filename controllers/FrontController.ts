@@ -531,7 +531,6 @@ export const FrontController = {
           user_phone: true,
           user_img: true,
           user_status: true,
-          google_id: true,
         },
       });
 
