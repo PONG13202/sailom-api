@@ -20,7 +20,7 @@ const prisma = new PrismaClient();
 dotenv.config();
 
 const app = express();
-const port = 5000;
+const port = process.env.PORT || 5000;
 
 app.use(
   cors({
@@ -790,7 +790,6 @@ app.get("/health", (_req: Request, res: Response) => {
   res.status(200).json({ ok: true });
 });
 
-// เริ่มเซิร์ฟเวอร์
 server.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+  console.log("Server running on port " + port);
 });
