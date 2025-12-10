@@ -4,7 +4,7 @@ import crypto from "crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { sendOtpEmail } from "../OTP/mailer";
 import { buildPromptPay } from "../OTP/qr";
-
+import { sendConfirmEmail } from "../OTP/sendConfirmEmail";
 const prisma = new PrismaClient();
 const hash = (s: string) => crypto.createHash("sha256").update(s).digest("hex");
 
@@ -192,113 +192,138 @@ list: async (req: Request, res: Response) => {
   },
 
   // ---------- CREATE: POST /reservations ----------
-  create: async (req: Request, res: Response) => {
-    try {
-      const userId = Number((req as any).userId);
-      if (!userId) return res.status(401).json({ message: "Unauthorized" });
+// ---------- CREATE: POST /reservations ----------
+create: async (req: Request, res: Response) => {
+  try {
+    const userId = Number((req as any).userId);
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
-      const { tableId: tableIdRaw, date, time, durationMin = 60, people = 1, items } = req.body;
+    const { tableId: tableIdRaw, date, time, durationMin = 60, people = 1, items } = req.body;
 
-      if (!date || !time) return res.status(400).json({ message: "กรุณาเลือกวันและเวลา" });
-      if (!tableIdRaw) return res.status(400).json({ message: "ต้องเลือกโต๊ะก่อนทำการจอง" });
+    if (!date || !time) return res.status(400).json({ message: "กรุณาเลือกวันและเวลา" });
+    if (!tableIdRaw) return res.status(400).json({ message: "ต้องเลือกโต๊ะก่อนทำการจอง" });
 
-      const tableIdNum = Number(tableIdRaw);
-      const start = new Date(`${date}T${time}:00`);
-      const end = new Date(start.getTime() + Number(durationMin) * 60_000);
+    const tableIdNum = Number(tableIdRaw);
+    const start = new Date(`${date}T${time}:00`);
+    const end = new Date(start.getTime() + Number(durationMin) * 60_000);
 
-      const hasItems = Array.isArray(items) && items.length > 0;
+    const hasItems = Array.isArray(items) && items.length > 0;
 
-      if (!hasItems && !(Number.isInteger(tableIdNum) && tableIdNum > 0)) {
-        return res.status(400).json({ message: "กรุณาเลือกโต๊ะเมื่อไม่ได้สั่งอาหารล่วงหน้า" });
-      }
+    if (!hasItems && !(Number.isInteger(tableIdNum) && tableIdNum > 0)) {
+      return res.status(400).json({ message: "กรุณาเลือกโต๊ะเมื่อไม่ได้สั่งอาหารล่วงหน้า" });
+    }
 
-      if (await hasOverlap(tableIdNum, start, end)) {
-        return res.status(409).json({ message: "ช่วงเวลานี้ถูกจองแล้ว" });
-      }
+    if (await hasOverlap(tableIdNum, start, end)) {
+      return res.status(409).json({ message: "ช่วงเวลานี้ถูกจองแล้ว" });
+    }
 
-      const result = await prisma.$transaction(
-        async (tx) => {
-          // double-check overlap within tx
-          if (
-            await tx.reservation.findFirst({
-              where: {
-                tableId: tableIdNum,
-                status: { in: ["PENDING_OTP", "OTP_VERIFIED", "AWAITING_PAYMENT", "CONFIRMED"] },
-                dateStart: { lt: end },
-                dateEnd: { gt: start },
-              },
-              select: { id: true },
-            })
-          ) {
-            throw new Error("TABLE_CLASH");
+    const result = await prisma.$transaction(
+      async (tx) => {
+        // double-check overlap
+        if (
+          await tx.reservation.findFirst({
+            where: {
+              tableId: tableIdNum,
+              status: { in: ["PENDING_OTP", "OTP_VERIFIED", "AWAITING_PAYMENT", "CONFIRMED"] },
+              dateStart: { lt: end },
+              dateEnd: { gt: start },
+            },
+            select: { id: true },
+          })
+        ) {
+          throw new Error("TABLE_CLASH");
+        }
+
+        const depositAmount = hasItems ? 0 : 100;
+
+        let orderId: number | null = null;
+        let orderTotal = 0;
+
+        if (hasItems) {
+          // ✅ ตรวจสอบและหัก stock
+          for (const it of items) {
+            const menu = await tx.foodMenu.findUnique({ where: { menu_id: it.id } });
+            if (!menu) throw new Error(`MENU_NOT_FOUND: ${it.id}`);
+            if (menu.isLimited === 1) {
+              if ((menu.stock ?? 0) < it.qty) {
+                throw new Error(`OUT_OF_STOCK: ${menu.menu_name}`);
+              }
+              await tx.foodMenu.update({
+                where: { menu_id: it.id },
+                data: { stock: { decrement: it.qty } },
+              });
+
+              // แจ้ง realtime ว่า stock เปลี่ยน
+              req.app.get("io")?.emit("menu:stock_updated", {
+                menuId: it.id,
+                newStock: (menu.stock ?? 0) - it.qty,
+              });
+            }
+            orderTotal += Number(it.price) * Number(it.qty);
           }
 
-          const depositAmount = hasItems ? 0 : 100;
-
-          // create order if has items
-          let orderId: number | null = null;
-          let orderTotal = 0;
-          if (hasItems) {
-            for (const it of items) orderTotal += Number(it.price) * Number(it.qty);
-            const order = await tx.order.create({
-              data: {
-                userId,
-                total: orderTotal,
-                status: "PENDING",
-                items: {
-                  create: items.map((it: any) => ({
-                    menuId: it.id,
-                    name: it.name,
-                    price: Number(it.price),
-                    qty: Number(it.qty),
-                    note: it.note || null,
-                    options: it.options ?? null,
-                  })),
-                },
-              },
-            });
-            orderId = order.id;
-          }
-
-          const r = await tx.reservation.create({
+          const order = await tx.order.create({
             data: {
               userId,
-              tableId: tableIdNum,
-              dateStart: start,
-              dateEnd: end,
-              people: Number(people) || 1,
-              status: "PENDING_OTP",
-              depositAmount,
-              orderId,
+              total: orderTotal,
+              status: "PENDING",
+              items: {
+                create: items.map((it: any) => ({
+                  menuId: it.id,
+                  name: it.name,
+                  price: Number(it.price),
+                  qty: Number(it.qty),
+                  note: it.note || null,
+                  options: it.options ?? null,
+                })),
+              },
             },
           });
+          orderId = order.id;
+        }
 
-          return { r, depositAmount, orderTotal };
-        },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
-      );
+        const r = await tx.reservation.create({
+          data: {
+            userId,
+            tableId: tableIdNum,
+            dateStart: start,
+            dateEnd: end,
+            people: Number(people) || 1,
+            status: "PENDING_OTP",
+            depositAmount,
+            orderId,
+          },
+        });
 
-      // realtime
-      req.app.get("io")?.emit("reservation:created", {
-        id: result.r.id,
-        tableId: result.r.tableId,
-        start,
-        end,
-      });
+        return { r, depositAmount, orderTotal };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
 
-      return res.status(201).json({
-        reservationId: result.r.id,
-        depositAmount: result.depositAmount,
-        orderTotal: result.orderTotal,
-      });
-    } catch (e: any) {
-      if (e?.message === "TABLE_CLASH") {
-        return res.status(409).json({ message: "ช่วงเวลานี้ถูกจองแล้ว" });
-      }
-      console.error(e);
-      return res.status(500).json({ message: "create reservation error", error: e.message });
+    req.app.get("io")?.emit("reservation:created", {
+      id: result.r.id,
+      tableId: result.r.tableId,
+      start,
+      end,
+    });
+
+    return res.status(201).json({
+      reservationId: result.r.id,
+      depositAmount: result.depositAmount,
+      orderTotal: result.orderTotal,
+    });
+  } catch (e: any) {
+    if (e?.message === "TABLE_CLASH") {
+      return res.status(409).json({ message: "ช่วงเวลานี้ถูกจองแล้ว" });
     }
-  },
+    if (e?.message?.startsWith("สินค้าไม่เพียงพอ")) {
+      return res.status(400).json({ message: e.message });
+    }
+    console.error(e);
+    return res.status(500).json({ message: "create reservation error", error: e.message });
+  }
+},
+
 
   // ---------- ขอ OTP ส่งอีเมล ----------
   requestOtp: async (req: Request, res: Response) => {
@@ -368,12 +393,54 @@ list: async (req: Request, res: Response) => {
         payAmount = r.depositAmount || 0;
       }
 
-      // ไม่ต้องจ่าย → ยืนยันเลย
-      if (payAmount <= 0) {
-        const confirmed = await prisma.reservation.update({
-          where: { id: r.id },
-          data: { status: "CONFIRMED" },
+if (payAmount <= 0) {
+const confirmed = await prisma.reservation.update({
+  where: { id: r.id },
+  data: { status: "CONFIRMED" },
+  include: { user: true, table: true, order: { include: { items: true } } }, // ✅ ดึง user, table เพิ่ม
+});
+
+ if (confirmed.order) {
+    for (const item of confirmed.order.items) {
+      const menu = await prisma.foodMenu.findUnique({
+        where: { menu_id: item.menuId },
+      });
+
+      if (menu && menu.isLimited === 1) {
+        await prisma.foodMenu.update({
+          where: { menu_id: item.menuId },
+          data: { stock: { decrement: item.qty } },
         });
+
+        req.app.get("io")?.emit("menu:stock_updated", {
+          menuId: item.menuId,
+          newStock: (menu.stock ?? 0) - item.qty,
+        });
+      }
+    }
+  }
+if (confirmed.user?.user_email) {
+  try {
+    console.log("[MAIL] Sending confirm email to:", confirmed.user.user_email);
+    const info = await sendConfirmEmail(
+      confirmed.user.user_email,
+      {
+        userName:
+          [confirmed.user.user_fname, confirmed.user.user_lname]
+            .filter(Boolean)
+            .join(" ") || confirmed.user.user_name,
+        tableLabel: confirmed.table?.label,
+        dateStart: confirmed.dateStart,
+        dateEnd: confirmed.dateEnd,
+      },
+      confirmed.order
+    );
+    console.log("[MAIL] Sent! MessageID:", info?.messageId);
+  } catch (err: any) {
+    console.error("[MAIL] Failed to send confirm email:", err?.message || err);
+  }
+}
+  
 
         req.app.get("io")?.emit("reservation:confirmed", {
           id: confirmed.id,
@@ -385,7 +452,6 @@ list: async (req: Request, res: Response) => {
         return res.json({ ok: true, status: confirmed.status, payment: null });
       }
 
-      // ต้องจ่าย → ออก QR 5 นาที
       const expire = new Date(Date.now() + 5 * 60 * 1000);
       const { payload, dataUrl } = await buildPromptPay(payAmount);
 
@@ -418,33 +484,168 @@ list: async (req: Request, res: Response) => {
     }
   },
 
-  // ---------- แอดมินกดยืนยัน (กรณีไม่มีบิล/ไม่มีสลิป) ----------
-  confirm: async (req: Request, res: Response) => {
-    const id = Number(req.params.id);
-    if (!id) return res.status(400).json({ message: "id required" });
+confirm: async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "id required" });
 
-    const r = await prisma.reservation.findUnique({ where: { id } });
-    if (!r) return res.status(404).json({ message: "not found" });
+  const r = await prisma.reservation.findUnique({
+    where: { id },
+    include: {
+      order: { include: { items: true } },
+    },
+  });
+  if (!r) return res.status(404).json({ message: "not found" });
 
-    if (r.status === "CONFIRMED") {
-      return res.json({ ok: true, id, status: "CONFIRMED" });
+  if (r.status === "CONFIRMED") {
+    return res.json({ ok: true, id, status: "CONFIRMED" });
+  }
+
+  // ✅ อัปเดต stock ถ้ามี order
+  if (r.order) {
+    for (const item of r.order.items) {
+      const menu = await prisma.foodMenu.findUnique({
+        where: { menu_id: item.menuId },
+      });
+
+      if (menu && menu.isLimited === 1) {
+        await prisma.foodMenu.update({
+          where: { menu_id: item.menuId },
+          data: { stock: { decrement: item.qty } },
+        });
+
+        req.app.get("io")?.emit("menu:stock_updated", {
+          menuId: item.menuId,
+          newStock: (menu.stock ?? 0) - item.qty,
+        });
+      }
+    }
+  }
+
+  const updated = await prisma.reservation.update({
+    where: { id },
+    data: { status: "CONFIRMED" },
+    include: { user: true, table: true, order: { include: { items: true } } },
+  });
+
+  // ✅ ต้องใช้ user_email และ table.label
+  if (updated.user?.user_email) {
+    try {
+      const reservationData = {
+        userName:
+          [updated.user.user_fname, updated.user.user_lname].filter(Boolean).join(" ") ||
+          updated.user.user_name,
+        tableLabel: updated.table?.label || "-",
+        dateStart: updated.dateStart,
+        dateEnd: updated.dateEnd,
+      };
+
+      const orderData = updated.order
+        ? {
+            total: updated.order.total,
+            items: updated.order.items.map((it) => ({
+              name: it.name,
+              qty: it.qty,
+              price: it.price,
+            })),
+          }
+        : null;
+
+      console.log("[MAIL] sending to:", updated.user.user_email);
+      const info = await sendConfirmEmail(updated.user.user_email, reservationData, orderData);
+      console.log("[MAIL] sent confirm email MessageId:", info?.messageId);
+    } catch (e) {
+      console.error("[MAIL] sendConfirmEmail failed:", e);
+    }
+  } else {
+    console.warn("[MAIL] no email found for user:", updated.user?.user_id);
+  }
+
+  req.app.get("io")?.emit("reservation:confirmed", {
+    id: updated.id,
+    tableId: updated.tableId,
+    start: updated.dateStart,
+    end: updated.dateEnd,
+  });
+  req.app.get("io")?.emit("reservation:updated", { id: updated.id });
+
+  return res.json({ ok: true, id, status: "CONFIRMED" });
+},
+
+// ========== TEST CONFIRM MAIL (manual) ==========
+// เพิ่มเมธอดนี้เข้าไปใน ReservationController
+update: async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id || 0);
+    const { dateStart, dateEnd } = req.body as {
+      dateStart?: string;
+      dateEnd?: string;
+    };
+
+    if (!id) return res.status(400).json({ message: "invalid id" });
+    if (!dateStart || !dateEnd) {
+      return res.status(400).json({ message: "ต้องมี dateStart และ dateEnd" });
+    }
+
+    const start = new Date(dateStart);
+    const end   = new Date(dateEnd);
+    if (isNaN(+start) || isNaN(+end)) {
+      return res.status(400).json({ message: "รูปแบบเวลาไม่ถูกต้อง" });
+    }
+    if (end.getTime() <= start.getTime()) {
+      return res.status(400).json({ message: "เวลาสิ้นสุดต้องมากกว่าเวลาเริ่ม" });
+    }
+
+    // หาใบจองที่จะแก้
+    const current = await prisma.reservation.findUnique({
+      where: { id },
+      select: { id: true, tableId: true, status: true },
+    });
+    if (!current) return res.status(404).json({ message: "ไม่พบรายการจอง" });
+    if (current.status === "CANCELED" || current.status === "EXPIRED") {
+      return res.status(400).json({ message: "สถานะนี้ไม่สามารถแก้ไขได้" });
+    }
+
+    // กันเวลาชนกับใบจองอื่นในโต๊ะเดียวกัน (ไม่นับตัวเอง)
+    if (current.tableId) {
+      const clash = await prisma.reservation.findFirst({
+        where: {
+          id: { not: id },
+          tableId: current.tableId,
+          status: { in: ["PENDING_OTP","OTP_VERIFIED","AWAITING_PAYMENT","CONFIRMED"] },
+          // ซ้อนทับช่วงเวลา: start < otherEnd && end > otherStart
+          dateStart: { lt: end },
+          dateEnd:   { gt: start },
+        },
+        select: { id: true },
+      });
+      if (clash) {
+        return res.status(409).json({ message: "ช่วงเวลานี้ชนกับการจองอื่นของโต๊ะเดียวกัน" });
+      }
     }
 
     const updated = await prisma.reservation.update({
       where: { id },
-      data: { status: "CONFIRMED" },
+      data:  { dateStart: start, dateEnd: end },
     });
 
-    req.app.get("io")?.emit("reservation:confirmed", {
-      id: updated.id,
-      tableId: updated.tableId,
-      start: updated.dateStart,
-      end: updated.dateEnd,
-    });
+    // แจ้ง realtime ให้ FE รีเฟรชแบบเนียนๆ
     req.app.get("io")?.emit("reservation:updated", { id: updated.id });
 
-    return res.json({ ok: true, id, status: "CONFIRMED" });
-  },
+    return res.json({
+      ok: true,
+      id: updated.id,
+      dateStart: updated.dateStart,
+      dateEnd: updated.dateEnd,
+    });
+  } catch (e: any) {
+    console.error(e);
+    return res.status(500).json({ message: "update reservation error", error: e.message });
+  }
+},
+
+
+
+
 
   // ---------- CANCEL (สำหรับแอดมิน) ----------
   cancel: async (req: Request, res: Response) => {
@@ -453,9 +654,9 @@ list: async (req: Request, res: Response) => {
       const r = await prisma.reservation.findUnique({ where: { id } });
       if (!r) return res.status(404).json({ message: "not found" });
 
-      if (r.status === "CONFIRMED") {
-        return res.status(400).json({ message: "already confirmed" });
-      }
+      // if (r.status === "CONFIRMED") {
+      //   return res.status(400).json({ message: "already confirmed" });
+      // }
 
       await prisma.reservation.update({ where: { id }, data: { status: "CANCELED" } });
 

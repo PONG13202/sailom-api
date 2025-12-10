@@ -145,10 +145,10 @@ export const UserController = {
       });
 
       if (existemail) {
-        return res.json({ available: false }); // มีอีเมลนี้แล้ว
+        return res.json({ available: false }); 
       }
 
-      return res.json({ available: true }); // ใช้งานได้
+      return res.json({ available: true }); 
     } catch (error) {
       console.error("Email check error:", error);
       return res
@@ -666,6 +666,7 @@ login: async (req: Request, res: Response) => {
         where: { user_id: id },
         select: {
           user_id: true,
+          user_name: true,
           user_fname: true,
           user_lname: true,
           user_email: true,
@@ -1597,327 +1598,177 @@ menus: async (req: Request, res: Response) => {
     return res.status(500).json({ message: "Failed to fetch menus" });
   }
 },
-  add_menu: async (req: Request, res: Response) => {
-    // ดึง mainImageIndex ออกมาจาก req.body ด้วย
+
+add_menu: async (req: Request, res: Response) => {
+  const {
+    menu_name,
+    menu_price,
+    menu_description,
+    typefoodIds,
+    mainImageIndex,
+    menu_status,
+    isLimited,
+    stock,
+  } = req.body;
+
+  let parsedTypefoodIds: number[] = [];
+  if (typeof typefoodIds === "string") {
+    try {
+      parsedTypefoodIds = JSON.parse(typefoodIds).map((id: any) => parseInt(id));
+    } catch {
+      return res.status(400).json({ message: "Invalid typefoodIds format" });
+    }
+  } else if (Array.isArray(typefoodIds)) {
+    parsedTypefoodIds = typefoodIds.map((id: any) => parseInt(id));
+  }
+
+  const files = req.files as Express.Multer.File[] | undefined;
+  const imagePaths = files ? files.map((f) => `/uploads/menu_images/${f.filename}`) : [];
+
+  let parsedMainImageIndex: number | null = null;
+  if (mainImageIndex !== undefined && mainImageIndex !== null) {
+    parsedMainImageIndex = parseInt(mainImageIndex as string, 10);
+    if (isNaN(parsedMainImageIndex)) parsedMainImageIndex = null;
+  }
+
+  try {
+    const newMenu = await prisma.foodMenu.create({
+      data: {
+        menu_name,
+        menu_price: parseInt(menu_price),
+        menu_description: menu_description || null,
+        menu_status: menu_status !== undefined ? parseInt(menu_status) : 1,
+        isLimited: isLimited ? parseInt(isLimited) : 0,       // ✅ เพิ่ม
+        stock: stock !== undefined ? parseInt(stock) : null,  // ✅ เพิ่ม
+
+        Typefoods: {
+          create: parsedTypefoodIds.map((id) => ({ typefood: { connect: { id } } })),
+        },
+        MenuImages: {
+          create: imagePaths.map((path, idx) => ({
+            menu_image: path,
+            menu_status: parsedMainImageIndex !== null && idx === parsedMainImageIndex ? 1 : 0,
+          })),
+        },
+      },
+      include: {
+        MenuImages: true,
+        Typefoods: { include: { typefood: true } },
+      },
+    });
+
+    emit(req, "menu:created", newMenu);
+    return res.status(200).json(newMenu);
+  } catch (error: any) {
+    console.error("Error creating menu:", error);
+    if (files && files.length > 0) {
+      files.forEach((file) => {
+        const filePath = path.join(UPLOADS_DIR, file.filename);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      });
+    }
+    return res.status(500).json({ message: "Failed to create menu", error: error.message });
+  }
+},
+
+// ==================== UPDATE MENU ====================
+update_menu: async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const menuId = parseInt(id);
+  const newFiles = req.files as Express.Multer.File[];
+
+  try {
     const {
       menu_name,
       menu_price,
       menu_description,
       typefoodIds,
-      mainImageIndex,
-      menu_status, 
+      existingImages,
+      mainImageIdentifier,
+      menu_status,
+      isLimited,
+      stock,
     } = req.body;
 
-    // Parse inputs (assuming typefoodIds is a JSON array string or array)
-    let parsedTypefoodIds: number[] = [];
-    if (typeof typefoodIds === "string") {
-      try {
-        parsedTypefoodIds = JSON.parse(typefoodIds).map((id: any) =>
-          parseInt(id)
-        );
-      } catch (e) {
-        return res.status(400).json({ message: "Invalid typefoodIds format" });
-      }
-    } else if (Array.isArray(typefoodIds)) {
-      parsedTypefoodIds = typefoodIds.map((id: any) => parseInt(id));
+    if (isNaN(menuId)) return res.status(400).json({ message: "Invalid Menu ID." });
+    if (!menu_name || !menu_price || !typefoodIds) {
+      return res.status(400).json({ message: "Missing required fields." });
     }
 
-    // Handle uploaded files (multiple images)
-    const files = req.files as Express.Multer.File[] | undefined;
-    const imagePaths = files
-      ? files.map((file) => `/uploads/menu_images/${file.filename}`)
-      : [];
+    const parsedTypefoodIds: number[] = JSON.parse(typefoodIds);
+    const parsedExistingImages = existingImages ? JSON.parse(existingImages) : [];
 
-    // แปลง mainImageIndex ให้เป็นตัวเลข (ถ้ามี)
-    let parsedMainImageIndex: number | null = null;
-    if (mainImageIndex !== undefined && mainImageIndex !== null) {
-      parsedMainImageIndex = parseInt(mainImageIndex as string, 10);
-      if (isNaN(parsedMainImageIndex)) {
-        parsedMainImageIndex = null; // ตั้งเป็น null ถ้าแปลงเป็นตัวเลขไม่ได้
+    const currentMenu = await prisma.foodMenu.findUnique({
+      where: { menu_id: menuId },
+      include: { MenuImages: true },
+    });
+    if (!currentMenu) return res.status(404).json({ message: "Menu not found." });
+
+    const keepIds = new Set(parsedExistingImages.map((img: any) => img.menu_image_id).filter(Boolean));
+    for (const dbImage of currentMenu.MenuImages) {
+      if (!keepIds.has(dbImage.menu_image_id)) {
+        await prisma.menuImage.delete({ where: { menu_image_id: dbImage.menu_image_id } });
+        const filePath = path.join(UPLOADS_DIR, path.basename(dbImage.menu_image));
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       }
     }
 
-    try {
-      const newMenu = await prisma.foodMenu.create({
-        data: {
-          menu_name,
-          menu_price: parseInt(menu_price), // Ensure price is integer
-          menu_description: menu_description || null, // ตรวจสอบว่ามีค่า description หรือไม่ ถ้าไม่มีให้เป็น null
-          menu_status: menu_status !== undefined ? parseInt(menu_status) : 1,
-
-
-          Typefoods: {
-            create: parsedTypefoodIds.map((id) => ({
-              typefood: {
-                connect: { id },
-              },
-            })),
-          },
-          MenuImages: {
-            create: imagePaths.map((path, index) => ({
-              // เพิ่ม index เข้ามาในการ map
-              menu_image: path,
-              // ตั้งค่า menu_status เป็น 1 ถ้าเป็นรูปหลัก, มิฉะนั้นเป็น 0
-              menu_status:
-                parsedMainImageIndex !== null && index === parsedMainImageIndex
-                  ? 1
-                  : 0,
-            })),
-          },
-        },
-        include: {
-          MenuImages: true,
-          Typefoods: {
-            include: {
-              typefood: true,
-            },
-          },
-        },
-      });
-      emit(req, "menu:created", newMenu);
-      return res.status(200).json(newMenu);
-    } catch (error: any) {
-      console.error("Error creating menu:", error);
-      // เพิ่ม Logic ในการลบไฟล์ที่อัปโหลดไปแล้วหากเกิดข้อผิดพลาด
-      if (files && files.length > 0) {
-        files.forEach((file) => {
-          const filePath = path.join(
-            __dirname,
-            "../../uploads/menu_images",
-            file.filename
-          ); // ปรับ path ตามโครงสร้างโปรเจกต์ของคุณ
-          if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
-            console.log(`Deleted uploaded file: ${filePath}`);
-          }
-        });
-      }
-      emit(req, "menu:created", null);
-      return res
-        .status(500)
-        .json({ message: "Failed to create menu", error: error.message });
-    }
-  },
-  update_menu: async (req: Request, res: Response) => {
-    const { id } = req.params;
-    const menuId = parseInt(id);
-
-    const newFiles = req.files as Express.Multer.File[];
-
-    try {
-      const {
-        menu_name,
-        menu_price,
-        menu_description,
-        typefoodIds,
-        existingImages,
-        mainImageIdentifier,
-        menu_status, 
-      } = req.body;
-
-      if (isNaN(menuId)) {
-        return res.status(400).json({ message: "Invalid Menu ID." });
-      }
-
-      if (!menu_name || !menu_price || !typefoodIds) {
-        return res.status(400).json({
-          message: "Missing required menu fields (name, price, types).",
-        });
-      }
-
-      const parsedTypefoodIds: number[] = JSON.parse(typefoodIds);
-      // parsedExistingImages คือรูปที่ Frontend บอกว่า "ยังคงอยู่"
-      const parsedExistingImages: {
-        menu_image_id?: number;
-        menu_image: string;
-        menu_status: number;
-      }[] = existingImages ? JSON.parse(existingImages) : [];
-
-      // 1. ดึงข้อมูลเมนูเดิมและรูปภาพปัจจุบันจาก DB
-      const currentMenu = await prisma.foodMenu.findUnique({
-        where: { menu_id: menuId },
-        include: { MenuImages: true },
-      });
-
-      if (!currentMenu) {
-        return res.status(404).json({ message: "Menu not found." });
-      }
-
-      const currentDbImages = currentMenu.MenuImages;
-      const imagesToKeepFromFrontendIds = new Set(
-        parsedExistingImages
-          .map((img) => img.menu_image_id)
-          .filter((id) => id !== undefined)
-      );
-
-      // 2. จัดการรูปภาพ: ลบ Record รูปภาพที่ Frontend บอกว่าไม่ต้องการแล้วออกจาก DB และ **ลบไฟล์จริง** ออกจาก Server
-      for (const dbImage of currentDbImages) {
-        if (!imagesToKeepFromFrontendIds.has(dbImage.menu_image_id)) {
-          // ลบ Record จาก DB
-          await prisma.menuImage.delete({
-            where: { menu_image_id: dbImage.menu_image_id },
-          });
-
-          // *** เพิ่มส่วนนี้เพื่อลบไฟล์จริงออกจาก Server ***
-          const imagePathToDelete = path.join(
-            UPLOADS_DIR,
-            path.basename(dbImage.menu_image)
-          );
-          if (fs.existsSync(imagePathToDelete)) {
-            try {
-              fs.unlinkSync(imagePathToDelete);
-              console.log(`Deleted old menu image file: ${imagePathToDelete}`);
-            } catch (fileDeleteError: any) {
-              console.error(
-                `Failed to delete file ${imagePathToDelete}: ${fileDeleteError.message}`
-              );
-              // ไม่จำเป็นต้อง throw error ตรงนี้ เพราะการลบ DB record สำเร็จแล้ว
-            }
-          } else {
-            console.warn(
-              `File not found for deletion: ${imagePathToDelete} (might already be deleted or path is incorrect)`
-            );
-          }
-          // ***********************************************
-        }
-      }
-
-      // 3. เพิ่มรูปภาพใหม่ที่อัปโหลด (ถ้ามี)
-      const newImageRecords: {
-        menu_image: string;
-        menu_id: number;
-        menu_status: number;
-      }[] = [];
-      for (const file of newFiles) {
-        const filePath = `/uploads/menu_images/${file.filename}`;
-        newImageRecords.push({
-          menu_image: filePath,
+    if (newFiles?.length) {
+      await prisma.menuImage.createMany({
+        data: newFiles.map((f) => ({
+          menu_image: `/uploads/menu_images/${f.filename}`,
           menu_id: menuId,
           menu_status: 0,
-        });
-      }
-
-      if (newImageRecords.length > 0) {
-        await prisma.menuImage.createMany({
-          data: newImageRecords,
-        });
-      }
-
-      // 4. อัปเดตเมนูหลัก
-      const updatedMenu = await prisma.foodMenu.update({
-        where: { menu_id: menuId },
-        data: {
-          menu_name: menu_name,
-          menu_price: parseInt(menu_price),
-          menu_description: menu_description || null,
-          menu_status: menu_status !== undefined ? parseInt(menu_status) : currentMenu.menu_status,  
-        },
-      });
-
-      // 5. อัปเดตความสัมพันธ์ Many-to-Many สำหรับประเภทอาหาร
-      await prisma.foodMenuType.deleteMany({
-        where: { foodMenuId: menuId },
-      });
-      const newTypeFoodRelations = parsedTypefoodIds.map((typeId: number) => ({
-        foodMenuId: menuId,
-        typefoodId: typeId,
-      }));
-      if (newTypeFoodRelations.length > 0) {
-        await prisma.foodMenuType.createMany({
-          data: newTypeFoodRelations,
-        });
-      }
-
-      // 6. จัดการรูปภาพหลัก (หลังจากเพิ่มและลบ Record รูปภาพแล้ว)
-      // ดึงรูปภาพทั้งหมดที่เหลืออยู่ใน DB (เดิมที่ยังอยู่ + ใหม่ที่เพิ่งเพิ่ม)
-      const allCurrentImages = await prisma.menuImage.findMany({
-        where: { menu_id: menuId },
-      });
-
-      // ตั้งค่า menu_status ของรูปภาพทั้งหมดให้เป็น 0 ก่อน
-      await prisma.menuImage.updateMany({
-        where: { menu_id: menuId },
-        data: { menu_status: 0 },
-      });
-
-      if (mainImageIdentifier) {
-        // กรณีรูปหลักเป็นรูปเดิม (ส่งมาเป็น path)
-        if (
-          typeof mainImageIdentifier === "string" &&
-          mainImageIdentifier.startsWith("/uploads/menu_images")
-        ) {
-          await prisma.menuImage.updateMany({
-            where: {
-              menu_id: menuId,
-              menu_image: mainImageIdentifier,
-            },
-            data: { menu_status: 1 },
-          });
-        } else {
-          // กรณีรูปหลักเป็นรูปใหม่ (ส่งมาเป็น index ของ newFiles)
-          const mainImageIndexAsNumber = parseInt(
-            mainImageIdentifier as string
-          );
-          if (
-            !isNaN(mainImageIndexAsNumber) &&
-            newFiles.length > mainImageIndexAsNumber
-          ) {
-            const mainNewImageFilename =
-              newFiles[mainImageIndexAsNumber].filename;
-            const mainNewImagePath = `/uploads/menu_images/${mainNewImageFilename}`;
-
-            await prisma.menuImage.updateMany({
-              where: {
-                menu_id: menuId,
-                menu_image: mainNewImagePath,
-              },
-              data: { menu_status: 1 },
-            });
-          }
-        }
-      } else if (allCurrentImages.length === 1) {
-        // ถ้าเหลือรูปเดียว ให้ตั้งเป็นรูปหลักโดยอัตโนมัติ
-        await prisma.menuImage.update({
-          where: { menu_image_id: allCurrentImages[0].menu_image_id },
-          data: { menu_status: 1 },
-        });
-      }
-
- const updatedMenuFull = await prisma.foodMenu.findUnique({
-  where: { menu_id: menuId },
-  include: {
-    MenuImages: true,
-    Typefoods: { include: { typefood: true } },
-  },
-});
-
-emit(req, "menu:updated", updatedMenuFull);
-res.status(200).json({
-  message: "Menu updated successfully.",
-  menu: updatedMenuFull,
-});
-      res
-        .status(200)
-        .json({ message: "Menu updated successfully.", menu: updatedMenu });
-    } catch (error: any) {
-      console.error("Error updating menu:", error);
-      // ควรมีการ rollback รูปภาพใหม่ที่อัปโหลดไปแล้วหากเกิดข้อผิดพลาดใน DB transaction
-      // ส่วนนี้ยังคงต้องลบไฟล์ใหม่ที่อัปโหลดหากเกิด error เพราะมันยังไม่มี Record ใน DB
-      if (newFiles && newFiles.length > 0) {
-        newFiles.forEach((file) => {
-          const filePath = path.join(UPLOADS_DIR, file.filename);
-          if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
-            console.log(`Cleaned up uploaded file due to error: ${filePath}`);
-          }
-        });
-      }
-      res.status(500).json({
-        message: "Failed to update menu.",
-        error: error.message,
+        })),
       });
     }
-  },
+
+    await prisma.foodMenu.update({
+      where: { menu_id: menuId },
+      data: {
+        menu_name,
+        menu_price: parseInt(menu_price),
+        menu_description: menu_description || null,
+        menu_status: menu_status !== undefined ? parseInt(menu_status) : currentMenu.menu_status,
+        isLimited: isLimited ? parseInt(isLimited) : 0,       // ✅ เพิ่ม
+        stock: stock !== undefined ? parseInt(stock) : null,  // ✅ เพิ่ม
+      },
+    });
+
+    await prisma.foodMenuType.deleteMany({ where: { foodMenuId: menuId } });
+    if (parsedTypefoodIds.length) {
+      await prisma.foodMenuType.createMany({
+        data: parsedTypefoodIds.map((tid) => ({ foodMenuId: menuId, typefoodId: tid })),
+      });
+    }
+
+    await prisma.menuImage.updateMany({ where: { menu_id: menuId }, data: { menu_status: 0 } });
+    if (mainImageIdentifier) {
+      await prisma.menuImage.updateMany({
+        where: { menu_id: menuId, menu_image: mainImageIdentifier },
+        data: { menu_status: 1 },
+      });
+    }
+
+    const updatedMenu = await prisma.foodMenu.findUnique({
+      where: { menu_id: menuId },
+      include: { MenuImages: true, Typefoods: { include: { typefood: true } } },
+    });
+
+    emit(req, "menu:updated", updatedMenu);
+    return res.status(200).json({ message: "Menu updated successfully.", menu: updatedMenu });
+  } catch (error: any) {
+    console.error("Error updating menu:", error);
+    if (newFiles?.length) {
+      newFiles.forEach((file) => {
+        const filePath = path.join(UPLOADS_DIR, file.filename);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      });
+    }
+    return res.status(500).json({ message: "Failed to update menu", error: error.message });
+  }
+},
+
   delete_menu: async (req: Request, res: Response) => {
     const { id } = req.params;
     const menuId = parseInt(id);

@@ -1,4 +1,4 @@
-// C:\Users\pong1\OneDrive\เอกสาร\End-Pro\api\index.ts
+
 import express, { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
@@ -49,6 +49,7 @@ const extraUploadDir = process.env.UPLOAD_DIR || "uploads";
 app.use("/uploads", express.static(path.resolve("uploads")));
 
 const server = http.createServer(app);
+
 const io = new Server(server, {
   cors: {
     origin: ["http://localhost:3000", "http://localhost:3001"],
@@ -217,7 +218,24 @@ app.post("/reservations", authenticateToken, async (req, res) => {
 app.get("/reservation/:id", authenticateToken, async (req, res) => {
   try { await ReservationController.get(req, res); }
   catch (e) { console.error(e); res.status(500).json({ message: "Internal Server Error" }); }
+  
 });
+app.post("/reservations/:id/confirm", authenticateToken, async (req, res) => {
+  try { await ReservationController.confirm(req, res); }
+  catch { res.status(500).json({ message: "Internal Server Error" }); }
+});
+app.patch("/reservations/:id",
+  authenticateToken,
+
+  async (req, res) => {
+    try { await ReservationController.update(req, res); }
+    catch (e) {
+      console.error(e);
+      res.status(500).json({ message: "Internal Server Error" });
+    }
+  }
+);
+
 app.post("/reservations/:id/request-otp", authenticateToken, async (req, res) => {
   try { await ReservationController.requestOtp(req, res); }
   catch { res.status(500).json({ message: "Internal Server Error" }); }
@@ -246,12 +264,12 @@ app.post("/payment/:id/slip",
   }
 );
 
-app.post("/payment/:id/confirm",
-  authenticateToken,async (req, res) => {
-    try { await PaymentController.confirm(req, res); }
-    catch { res.status(500).json({ message: "Internal Server Error" }); }
-  }
-);
+// app.post("/payment/:id/confirm",
+//   authenticateToken,async (req, res) => {
+//     try { await PaymentController.confirm(req, res); }
+//     catch { res.status(500).json({ message: "Internal Server Error" }); }
+//   }
+// );
 
 
 

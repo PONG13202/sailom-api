@@ -1,3 +1,4 @@
+
 {
   "dependencies": {
     "@prisma/client": "^6.14.0",
@@ -19,10 +20,11 @@
   "name": "api",
   "version": "1.0.0",
   "main": "index.js",
-  "scripts": {
-    "start": "ts-node-dev --respawn index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
+"scripts": {
+  "dev": "ts-node-dev --respawn index.ts",
+  "build": "tsc",
+  "start": "ts-node-dev --respawn index.ts"
+},
   "author": "",
   "license": "ISC",
   "description": "",

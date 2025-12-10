@@ -559,6 +559,7 @@ export const FrontController = {
         where: { user_id: id },
         select: {
           user_id: true,
+          user_name: true,
           user_fname: true,
           user_lname: true,
           user_email: true,
@@ -885,6 +886,7 @@ upload_avatar: async (req: Request, res: Response) => {
   try {
     if (!req.file) return res.status(400).json({ message: "ไม่พบไฟล์อัปโหลด" });
     const relPath = `uploads/user_images/${req.file.filename}`; // เก็บเป็นพาธสัมพัทธ์
+    getIO(req)?.emit("upload_avatar", { url: relPath, path: relPath });
     return res.status(200).json({ url: relPath, path: relPath });
   } catch (e: any) {
     console.error("upload_avatar error:", e);
@@ -893,9 +895,6 @@ upload_avatar: async (req: Request, res: Response) => {
   }
 },
 
-// อัปเดตข้อมูลโปรไฟล์
-// อัปเดตข้อมูลโปรไฟล์
-// อัปเดตข้อมูลโปรไฟล์
 update_profile: async (req: Request, res: Response) => {
   try {
     const userData = (req as any).user;

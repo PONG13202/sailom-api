@@ -96,6 +96,8 @@ model FoodMenu {
   menu_price       Int
   menu_description String?
   menu_status      Int            @default(1)
+  isLimited        Int        @default(0) 
+  stock            Int?   
   MenuImages       MenuImage[]
   Typefoods        FoodMenuType[]
 }

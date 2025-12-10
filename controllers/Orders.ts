@@ -92,6 +92,7 @@ const data = list.map((o) => ({
     options: it.options,
   })),
   reservationId: o.reservation?.id ?? null,
+  reservationStatus: o.reservation?.status ?? null, 
   tableLabel: o.reservation?.table?.label ?? null,
   start: o.reservation?.dateStart?.toISOString() ?? null,
   user: o.user ? {
@@ -158,58 +159,83 @@ return res.json({
    * 1) { items: [{id, menuId, qty, note}] }  -> แก้จำนวน/โน้ต และคำนวณ total ใหม่
    * 2) { status: "PENDING"|"CONFIRMED"|"CANCELED" } -> เปลี่ยนสถานะบิล
    */
-  update: async (req: Request, res: Response) => {
-    const id = Number(req.params.id);
-    if (!id) return res.status(400).json({ message: "id required" });
+update: async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ message: "id required" });
 
-    const body = (req.body ?? {}) as {
-      items?: Array<{ id: number; menuId: number; qty: number; note?: string | null }>;
-      status?: OrderStatus | "PENDING" | "CONFIRMED" | "CANCELED";
-    };
+  const body = (req.body ?? {}) as {
+    items?: Array<{ id: number; menuId: number; qty: number; note?: string | null }>;
+    status?: OrderStatus | "PENDING" | "CONFIRMED" | "CANCELED";
+  };
 
-    const ord = await prisma.order.findUnique({ where: { id }, include: { items: true } });
-    if (!ord) return res.status(404).json({ message: "not found" });
+  const ord = await prisma.order.findUnique({ where: { id }, include: { items: true } });
+  if (!ord) return res.status(404).json({ message: "not found" });
 
-    let newTotal: number | undefined = undefined;
+  let newTotal: number | undefined = undefined;
 
-    // 1) อัปเดตรายการอาหาร (qty/note)
-    if (Array.isArray(body.items)) {
-      await Promise.all(
-        body.items.map((it) =>
-          prisma.orderItem.update({
-            where: { id: it.id },
-            data: { qty: Math.max(1, Number(it.qty) || 1), note: it.note ?? null },
-          })
-        )
-      );
+  // 1) อัปเดตรายการอาหาร (qty/note)
+  if (Array.isArray(body.items)) {
+    await Promise.all(
+      body.items.map((it) =>
+        prisma.orderItem.update({
+          where: { id: it.id },
+          data: { qty: Math.max(1, Number(it.qty) || 1), note: it.note ?? null },
+        })
+      )
+    );
 
-      const latest = await prisma.order.findUnique({ where: { id }, include: { items: true } });
-      newTotal = latest?.items.reduce((a, c) => a + Number(c.price) * Number(c.qty), 0) ?? 0;
+    const latest = await prisma.order.findUnique({ where: { id }, include: { items: true } });
+    newTotal = latest?.items.reduce((a, c) => a + Number(c.price) * Number(c.qty), 0) ?? 0;
 
-      await prisma.order.update({ where: { id }, data: { total: newTotal } });
+    await prisma.order.update({ where: { id }, data: { total: newTotal } });
+  }
+
+  // 2) เปลี่ยนสถานะบิล (optional)
+  if (body.status) {
+    const allow: OrderStatus[] = ["PENDING", "CONFIRMED", "CANCELED"];
+    if (!allow.includes(body.status as OrderStatus)) {
+      return res.status(400).json({ message: "invalid status" });
     }
 
-    // 2) เปลี่ยนสถานะบิล (optional)
-    if (body.status) {
-const allow: OrderStatus[] = ["PENDING", "CONFIRMED", "CANCELED"];
-if (!allow.includes(body.status as OrderStatus)) {
-  return res.status(400).json({ message: "invalid status" });
-}
-// if (body.status === "CANCELED") {
-//   await prisma.reservation.updateMany({
-//     where: { order: { id }, status: { not: "CONFIRMED" } },
-//     data: { status: "CANCELED" },
-//   });
-// }
-await prisma.order.update({ where: { id }, data: { status: body.status as OrderStatus } });
-    }
+    await prisma.order.update({ where: { id }, data: { status: body.status as OrderStatus } });
 
-    const updated = await prisma.order.findUnique({ where: { id } });
-    return res.json({
-      ok: true,
-      id,
-      total: newTotal ?? updated?.total ?? ord.total,
-      status: updated?.status ?? ord.status,
-    });
-  },
+    // ✅ ถ้า CONFIRMED → หัก stock
+    if (body.status === "CONFIRMED") {
+      const ordWithItems = await prisma.order.findUnique({
+        where: { id },
+        include: { items: true },
+      });
+
+      if (ordWithItems) {
+        for (const item of ordWithItems.items) {
+          const menu = await prisma.foodMenu.findUnique({
+            where: { menu_id: item.menuId },
+          });
+
+          if (menu && menu.isLimited === 1) {
+            await prisma.foodMenu.update({
+              where: { menu_id: item.menuId },
+              data: { stock: { decrement: item.qty } },
+            });
+
+            // broadcast stock updated (Realtime)
+            req.app.get("io")?.emit("menu:stock_updated", {
+              menuId: item.menuId,
+              newStock: (menu.stock ?? 0) - item.qty,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const updated = await prisma.order.findUnique({ where: { id } });
+  return res.json({
+    ok: true,
+    id,
+    total: newTotal ?? updated?.total ?? ord.total,
+    status: updated?.status ?? ord.status,
+  });
+},
+
 };
