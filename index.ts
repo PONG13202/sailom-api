@@ -20,11 +20,11 @@ const prisma = new PrismaClient();
 dotenv.config();
 
 const app = express();
-const port = 5000;
+
 
 app.use(
   cors({
-    origin: ["http://localhost:3000", "http://localhost:3001"],
+    origin: ["http://localhost:3000", "http://localhost:3001","https://sailom-fe.vercel.app","https://sailom-be.vercel.app"],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
   })
@@ -52,7 +52,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://localhost:3001"],
+    origin: ["http://localhost:3000", "http://localhost:3001","https://sailom-fe.vercel.app","https://sailom-be.vercel.app"],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
   },
@@ -820,7 +820,9 @@ app.post("/change_password", authenticateToken, async (req, res) => {
   catch { res.status(500).json({ message: "Internal Server Error" }); }
 });
 
-
+app.get("/", (_req: Request, res: Response) => {
+  res.status(200).json({ ok: true });
+});
 
 // (ทางเลือก) health check
 app.get("/health", (_req: Request, res: Response) => {
@@ -828,6 +830,7 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 // เริ่มเซิร์ฟเวอร์
-server.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
-});
+// server.listen(port, () => {
+//   console.log(`Server is running on port ${port}`);
+// });
+export default app;
