@@ -30,6 +30,7 @@ app.use(
   })
 );
 
+app.options("*", cors());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 const extraUploadDir = process.env.UPLOAD_DIR || "uploads";
