@@ -23,12 +23,17 @@ const app = express();
 app.use((req, res, next) => {
   res.setHeader("Cross-Origin-Opener-Policy", "unsafe-none");
   res.setHeader("Cross-Origin-Embedder-Policy", "unsafe-none");
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin"); // ⭐ เพิ่มตรงนี้สำคัญมาก !!
   next();
 });
-app.use(cors());
 app.use(
   cors({
-    origin: ["http://localhost:3000", "http://localhost:3001","https://sailom-fe.vercel.app","https://sailom-be.vercel.app"],
+    origin: [
+      "http://localhost:3000",
+      "http://localhost:3001",
+      "https://sailom-fe.vercel.app",
+      "https://sailom-be.vercel.app"
+    ],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "Accept"],
     credentials: true,
