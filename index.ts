@@ -22,9 +22,23 @@ dotenv.config();
 const app = express();
 
 
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "https://sailom-fe.vercel.app",
+  "https://sailom-be.vercel.app"
+];
+
 app.use(
   cors({
-    origin: ["http://localhost:3000", "http://localhost:3001","https://sailom-fe.vercel.app","https://sailom-be.vercel.app"],
+    origin: (origin, callback) => {
+      // อนุญาต request ที่ไม่มี origin (เช่นจาก Postman, curl, หรือบาง mobile app)
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, origin);  // ส่ง origin เดียวที่ตรงกลับไป (reflect)
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
   })
@@ -53,8 +67,14 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://localhost:3001","https://sailom-fe.vercel.app","https://sailom-be.vercel.app"],
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, origin);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    methods: ["GET", "POST"],
     credentials: true,
   },
 });
