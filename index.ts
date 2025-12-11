@@ -24,13 +24,13 @@ const app = express();
 
 app.use(
   cors({
-    origin: ["http://localhost:3000", "http://localhost:3001","https://sailom-fe.vercel.app","https://sailom-be.vercel.app"],
+    origin: ["http://localhost:3000", "http://localhost:3001","https://sailom-fe.vercel.app","https://sailom-be.vercel.app","sailom-3jj8qnq8j-khunnongmai17915-gmailcoms-projects.vercel.app","sailom-o70pakxvx-khunnongmai17915-gmailcoms-projects.vercel.app"],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
   })
 );
 
-app.options("*", cors());
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 const extraUploadDir = process.env.UPLOAD_DIR || "uploads";
@@ -53,7 +53,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://localhost:3001","https://sailom-fe.vercel.app","https://sailom-be.vercel.app"],
+    origin: ["http://localhost:3000", "http://localhost:3001","https://sailom-fe.vercel.app","https://sailom-be.vercel.app","sailom-3jj8qnq8j-khunnongmai17915-gmailcoms-projects.vercel.app","sailom-o70pakxvx-khunnongmai17915-gmailcoms-projects.vercel.app"],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
   },
