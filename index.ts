@@ -20,25 +20,31 @@ const prisma = new PrismaClient();
 dotenv.config();
 
 const app = express();
-app.use((req, res, next) => {
-  res.setHeader("Cross-Origin-Opener-Policy", "unsafe-none");
-  res.setHeader("Cross-Origin-Embedder-Policy", "unsafe-none");
-  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin"); // ⭐ เพิ่มตรงนี้สำคัญมาก !!
-  next();
-});
+const allowedOrigins = [
+  "https://sailom-fe.vercel.app",
+  "https://sailom-be.vercel.app",
+  "https://sailom-api.vercel.app",
+];
+
+// CORS FIX — ต้องใช้ callback ไม่ใช่ Array
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",
-      "http://localhost:3001",
-      "https://sailom-fe.vercel.app",
-      "https://sailom-be.vercel.app"
-    ],
+    origin(origin, callback) {
+      // อนุญาต server-to-server, หรือ browser ที่ไม่มี Origin
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("CORS blocked: " + origin));
+    },
+    credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "Accept"],
-    credentials: true,
   })
 );
+
 
 
 app.use(express.urlencoded({ extended: true }));
@@ -63,12 +69,21 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://localhost:3001","https://sailom-fe.vercel.app","https://sailom-be.vercel.app"],
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Socket CORS blocked: " + origin));
+    },
+    credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "Accept"],
-    credentials: true,
   },
 });
+
 
 app.set("io", io);
 async function expireSweep() {
